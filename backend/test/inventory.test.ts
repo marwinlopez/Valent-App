@@ -92,6 +92,48 @@ describe('POST /products', () => {
     });
     expect(res.statusCode).toBe(409);
   });
+
+  it('serializes the duplicate check with the write so two concurrent creates for the same barcode cannot both succeed', async () => {
+    // This test uses a stateful mock (rather than a canned return value) to exercise the
+    // actual race: getValues reflects whatever appendRow has "written" so far. With the
+    // duplicate check running outside sheetsQueue.enqueue, both concurrent requests would
+    // read "not found" before either one's write landed, and both appendRow calls would go
+    // through. With the check moved inside the same enqueue callback as the write, the
+    // second request's check only runs after the first request's write has completed
+    // (PQueue concurrency: 1 per account), so it correctly observes the row and gets 409.
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+
+    let appended = false;
+    sheets.getValues.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return appended ? [['999', 'Existing', 'Brand', 'Dept', 'unidad', '1', '1', '', '']] : [];
+    });
+    sheets.appendRow.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      appended = true;
+    });
+
+    const payload = {
+      barcode: '999',
+      name: 'Nuevo',
+      brand: 'Brand',
+      department: 'Dept',
+      unit: 'unidad',
+      costUsd: 1,
+      stock: 1,
+    };
+
+    const [res1, res2] = await Promise.all([
+      app.inject({ method: 'POST', url: '/products', headers: { authorization: `Bearer ${jwt}` }, payload }),
+      app.inject({ method: 'POST', url: '/products', headers: { authorization: `Bearer ${jwt}` }, payload }),
+    ]);
+
+    const statuses = [res1.statusCode, res2.statusCode].sort();
+    expect(statuses).toEqual([200, 409]);
+    expect(sheets.appendRow).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('PATCH /products/:barcode/stock', () => {

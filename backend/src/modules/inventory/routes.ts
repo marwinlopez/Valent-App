@@ -80,13 +80,21 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     ]);
     const spreadsheetId = rows[0].spreadsheet_id as string;
 
-    const existing = await findProductRow(app, spreadsheetId, body.barcode);
-    if (existing) {
-      throw new ApiError(409, 'DUPLICATE_BARCODE', `A product with barcode ${body.barcode} already exists`);
-    }
+    // The duplicate-barcode check MUST run inside the same enqueue callback as the
+    // appendRow write. If the check ran outside the queue (as a plain await before
+    // enqueue), two concurrent POSTs for the same barcode could both observe "not
+    // found" before either one's write lands, since the queue only serializes the
+    // writes themselves, not a check-then-write sequence spanning two separate calls.
+    // Wrapping both steps in one callback makes the whole check-then-write atomic
+    // with respect to other queued tasks for this account, mirroring the pattern the
+    // PATCH /products/:barcode/stock route already uses for its read-modify-write.
+    await app.deps.sheetsQueue.enqueue(req.auth!.accountId, async () => {
+      const existing = await findProductRow(app, spreadsheetId, body.barcode);
+      if (existing) {
+        throw new ApiError(409, 'DUPLICATE_BARCODE', `A product with barcode ${body.barcode} already exists`);
+      }
 
-    await app.deps.sheetsQueue.enqueue(req.auth!.accountId, () =>
-      app.deps.sheets.appendRow(spreadsheetId, PRODUCTS_APPEND_RANGE, [
+      await app.deps.sheets.appendRow(spreadsheetId, PRODUCTS_APPEND_RANGE, [
         body.barcode,
         body.name,
         body.brand,
@@ -96,8 +104,8 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
         body.stock,
         new Date().toISOString(),
         req.auth!.deviceId,
-      ])
-    );
+      ]);
+    });
 
     return body;
   });
