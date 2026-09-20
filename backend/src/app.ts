@@ -6,6 +6,7 @@ import { authGuardPlugin } from './plugins/authGuard.js';
 import { registerAuthRoutes } from './modules/auth/routes.js';
 import { registerDeviceRoutes } from './modules/devices/routes.js';
 import { registerBcvRoutes } from './modules/bcv/routes.js';
+import { registerMarginsRoutes } from './modules/margins/routes.js';
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -19,6 +20,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(registerAuthRoutes, { prefix: '/auth' });
   app.register(registerDeviceRoutes);
   app.register(registerBcvRoutes);
+  app.register(registerMarginsRoutes);
 
   return app;
 }
