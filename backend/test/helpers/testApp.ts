@@ -11,7 +11,11 @@ import type { Env } from '../../src/config/env.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(__dirname, '..', '..', 'migrations');
 
-export async function buildTestApp(): Promise<{ app: FastifyInstance; env: Env }> {
+export async function buildTestApp(): Promise<{
+  app: FastifyInstance;
+  env: Env;
+  sheets: { getValues: ReturnType<typeof vi.fn>; appendRow: ReturnType<typeof vi.fn>; updateRow: ReturnType<typeof vi.fn> };
+}> {
   const pool = createTestPool();
   await runMigrations(pool, migrationsDir);
 
@@ -30,5 +34,5 @@ export async function buildTestApp(): Promise<{ app: FastifyInstance; env: Env }
   };
 
   const app = buildApp({ pool, sheets: sheets as any, sheetsQueue: new SheetsQueue(), env });
-  return { app, env };
+  return { app, env, sheets };
 }

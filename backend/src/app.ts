@@ -8,6 +8,7 @@ import { registerDeviceRoutes } from './modules/devices/routes.js';
 import { registerBcvRoutes } from './modules/bcv/routes.js';
 import { registerMarginsRoutes } from './modules/margins/routes.js';
 import { registerCustomerRoutes } from './modules/customers/routes.js';
+import { registerInventoryRoutes } from './modules/inventory/routes.js';
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -23,6 +24,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(registerBcvRoutes);
   app.register(registerMarginsRoutes);
   app.register(registerCustomerRoutes);
+  app.register(registerInventoryRoutes);
 
   return app;
 }
