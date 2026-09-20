@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { ApiError } from '../../plugins/errorHandler.js';
 
 const createSchema = z.object({
   level: z.enum(['CATEGORIA', 'SUBCATEGORIA', 'DEPARTAMENTO']),
@@ -40,6 +41,9 @@ export async function registerMarginsRoutes(app: FastifyInstance): Promise<void>
        RETURNING id, level, level_name, percentage`,
       [body.percentage, id, req.auth!.accountId]
     );
+    if (rows.length === 0) {
+      throw new ApiError(404, 'MARGIN_RULE_NOT_FOUND', 'Margin rule not found');
+    }
     return rows[0];
   });
 }

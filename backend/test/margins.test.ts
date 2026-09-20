@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { buildTestApp } from './helpers/testApp';
 import { insertAccount, insertDevice } from './helpers/factories';
 import { signDeviceToken } from '../src/modules/auth/jwt';
@@ -29,5 +30,21 @@ describe('Margin rules', () => {
       payload: { percentage: 30 },
     });
     expect(Number(update.json().percentage)).toBe(30);
+  });
+
+  it('returns 404 when updating non-existent margin rule', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const device = await insertDevice(app.deps.pool, account.id, { role: 'ADMIN' });
+    const jwt = signDeviceToken({ deviceId: device.id, accountId: account.id, role: 'ADMIN' }, app.deps.env.JWT_SECRET);
+
+    const fakeId = randomUUID();
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/margins/${fakeId}`,
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { percentage: 30 },
+    });
+    expect(res.statusCode).toBe(404);
   });
 });
