@@ -13,6 +13,9 @@ export interface CreditCheckResult {
 export function evaluateCreditCheck(input: CreditCheckInput): CreditCheckResult {
   const availableCredit = Math.round((input.creditLimit - input.currentDebtBalance) * 100) / 100;
 
+  if (!Number.isFinite(input.requestedAmount)) {
+    return { approved: false, availableCredit, reason: 'Requested amount must be a valid number' };
+  }
   if (input.requestedAmount <= 0) {
     return { approved: false, availableCredit, reason: 'Requested amount must be positive' };
   }

@@ -21,6 +21,11 @@ describe('evaluateCreditCheck (pure)', () => {
     const result = evaluateCreditCheck({ currentDebtBalance: 0, creditLimit: 200, requestedAmount: 0 });
     expect(result.approved).toBe(false);
   });
+
+  it('rejects a non-finite requested amount', () => {
+    const result = evaluateCreditCheck({ currentDebtBalance: 0, creditLimit: 200, requestedAmount: NaN });
+    expect(result.approved).toBe(false);
+  });
 });
 
 describe('GET /customers/:id/credit-check', () => {
@@ -61,6 +66,29 @@ describe('GET /customers/:id/credit-check', () => {
     const res = await app.inject({
       method: 'GET',
       url: `/customers/${customerRows[0].id}/credit-check?amount=10`,
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    expect(res.json().approved).toBe(false);
+  });
+
+  it('rejects a non-numeric amount query param instead of approving', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const device = await insertDevice(app.deps.pool, account.id, { role: 'POST_VENTA' });
+    const jwt = signDeviceToken({ deviceId: device.id, accountId: account.id, role: 'POST_VENTA' }, app.deps.env.JWT_SECRET);
+
+    const { rows: levelRows } = await app.deps.pool.query(
+      'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
+      [account.id, 'Oro', 300, 30]
+    );
+    const { rows: customerRows } = await app.deps.pool.query(
+      'INSERT INTO customers (account_id, name, loyalty_level_id, current_debt_balance) VALUES ($1, $2, $3, $4) RETURNING id',
+      [account.id, 'Juan', levelRows[0].id, 100]
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/customers/${customerRows[0].id}/credit-check?amount=abc`,
       headers: { authorization: `Bearer ${jwt}` },
     });
     expect(res.json().approved).toBe(false);
