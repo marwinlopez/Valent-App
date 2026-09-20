@@ -93,7 +93,10 @@ describe('GET /auth/me', () => {
 
     const res = await app.inject({ method: 'GET', url: '/auth/me', headers: { authorization: `Bearer ${jwt}` } });
     expect(res.statusCode).toBe(200);
-    expect(res.json().status).toBe('REVOKED');
+    const body = res.json();
+    expect(body.status).toBe('REVOKED');
+    expect(body.jwt).toBeUndefined();
+    expect('jwt' in body).toBe(false);
   });
 
   it('returns a fresh, valid JWT with matching claims on success', async () => {

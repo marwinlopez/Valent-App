@@ -60,6 +60,9 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     }
     const role = rows[0].role as string;
     const status = rows[0].status as string;
+    if (status !== 'ACTIVE') {
+      return { role, status, accountId: auth.accountId };
+    }
     const jwt = signDeviceToken(
       { deviceId: auth.deviceId, accountId: auth.accountId, role: role as DeviceRole },
       app.deps.env.JWT_SECRET
