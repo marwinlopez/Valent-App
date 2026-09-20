@@ -40,8 +40,38 @@ backend/                      Node.js + TypeScript (ESM) + Fastify
   migrations/                 SQL plano, aplicado por src/db/migrate.ts
   test/                       Vitest; pg-mem para Postgres, googleapis mockeado para Sheets
 
-(pendiente) app móvil Expo — sub-proyectos 1-7, ver Roadmap abajo
+mobile/                       Expo SDK 57 + React Native + TypeScript (strict, sin `any`)
+  app/                        SOLO rutas (Expo Router, file-based). Cero lógica de negocio aquí.
+    _layout.tsx               Providers: ErrorBoundary > Paper > QueryClient > Toast > Stack
+    index.tsx                 Gate de redirección según sesión y rol
+    (auth)/home.tsx           Home / vinculación (placeholder hasta sub-proyecto 2)
+    (app)/                    Tabs con visibilidad por rol + 4 pantallas placeholder
+  src/
+    components/ui/            Atomic Design: Button, TextInput, Card, Skeleton, EmptyState
+    hooks/                    useSession, useAuthStatus, useSessionHydration, useRevocationGuard
+    services/
+      api/client.ts           apiFetch tipado: adjunta el JWT, signOut() en 401
+      api/auth.ts             getAuthMe + readDeviceIdFromJwt (hint local NO confiable)
+      session.ts              signIn/signOut: memoria + disco + caché de queries, siempre juntos
+      storage/secureStore.ts  Adaptador por plataforma (expo-secure-store nativo / memoria en web)
+      storage/secureSession.ts  Persistencia del JWT, valida al leer y borra lo corrupto
+      queryClient.ts          Singleton de TanStack Query (se limpia en signOut)
+    state/sessionStore.ts     Zustand: sesión + flag de hidratación
+    theme/                    Tema M3 (Paper) + tema de navegación derivado
+  test/                       Jest (jest-expo); solo lógica pura, sin tests de render
 ```
+
+**Web es target de desarrollo/verificación, NO de publicación.** El escáner de códigos de barras,
+el Hardware ID y el almacenamiento cifrado no funcionan de verdad en navegador. En web el JWT vive
+en memoria (se pierde al recargar) — **nunca** usar `localStorage`/`AsyncStorage` para el JWT, eso
+violaría la regla de no persistir credenciales sin cifrar. Ver `mobile/AGENTS.md`.
+
+Reglas de oro del lado móvil:
+- La lógica de negocio vive en `src/hooks/` o `src/services/`, **nunca** dentro de `app/`.
+- Sesión: usar siempre `signIn()`/`signOut()` — nunca `setSession`/`saveSession` por separado
+  (memoria y disco se desincronizan y la sesión se evapora al reiniciar).
+- El payload del JWT decodificado en el cliente es una **pista local no confiable**: sirve para
+  obtener el `deviceId`, jamás para decidir permisos (eso lo hace el backend en cada request).
 
 ## Modelo multi-tenant
 
@@ -81,14 +111,26 @@ transacción de venta a crédito vs. escritura en Sheets.)
 
 ## Pendiente
 
-- [ ] Sub-proyecto 1: Fundación móvil (Expo Router, tema Material 3 claro/oscuro con React
-      Native Paper, Zustand + TanStack Query, cliente API tipado, shell de navegación RBAC).
-      Aplicar Clean Architecture: `src/components/ui` (Atomic Design, reutilizable), custom
-      hooks para lógica de negocio (`useSheetsSync`, `useCreditValidation`, `useBCVRate`),
-      `src/services/` aislado para llamadas API, tipado estricto sin `any`, Error Boundaries,
-      Toasts/Skeletons para feedback visual.
+- [x] Sub-proyecto 1: Fundación móvil — hecho. Expo Router, tema M3 claro/oscuro, Atomic Design
+      en `src/components/ui`, hooks de negocio, `src/services/` aislado, tipado estricto sin
+      `any`, ErrorBoundary, Toasts y Skeletons. Los hooks `useSheetsSync`/`useCreditValidation`/
+      `useBCVRate` NO se construyeron por YAGNI (no tienen consumidor todavía) — se agregan en el
+      sub-proyecto que primero los necesite, siguiendo el patrón de `useAuthStatus`.
 - [ ] Sub-proyecto 2: Auth + vinculación de dispositivo (pantallas Home, Hardware ID vía
-      expo-application/expo-device, flujo de token de invitación)
+      expo-application/expo-device, flujo de token de invitación). Al empezar, cerrar estos
+      3 pendientes que la revisión final dejó parqueados:
+      - `client.ts`: el `await signOut()` del path 401 no está protegido — si
+        `SecureStore.deleteItemAsync` falla, `apiFetch` rechaza con un error de almacenamiento
+        en vez de `ApiRequestError` (una línea: `.catch(() => undefined)`).
+      - `client.ts`: `readJsonBody` se traga cualquier fallo de parseo en respuestas exitosas, así
+        que `apiFetch<T>` puede resolver a `null` mientras su tipo promete `T`. Limitarlo a 204.
+      - Una sesión no-ACTIVE guardada en disco no tiene hoy camino de limpieza (`app/index.tsx` la
+        redirige a Home antes de que monte `(app)/`, y `useRevocationGuard` solo vive bajo `(app)/`).
+        Hoy es inalcanzable, pero se vuelve real en cuanto este sub-proyecto persista una sesión
+        PENDING tras vincular un dispositivo.
+      - Además: `useRevocationGuard` ni adopta ni *detecta* un cambio de `accountId` al refrescar.
+        Se vuelve importante en cuanto algo lea `session.accountId`, porque las query keys no
+        llevan el tenant.
 - [ ] Sub-proyecto 3: Inventario (lista, escáner de código de barras, detalle/nuevo producto)
       — nota: el backend hoy solo expone GET/POST /products y PATCH stock; faltan
       `GET /products/search?q=` y `PUT /products/:barcode` del spec original, no
