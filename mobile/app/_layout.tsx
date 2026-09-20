@@ -1,42 +1,51 @@
 import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { PaperProvider } from 'react-native-paper';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useColorScheme } from 'react-native';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { StyleSheet, View, useColorScheme } from 'react-native';
+import * as SystemUI from 'expo-system-ui';
 import { ErrorBoundary } from '../src/errors/ErrorBoundary';
 import { ToastProvider } from '../src/feedback/ToastProvider';
 import { lightTheme, darkTheme } from '../src/theme/theme';
-import { useSessionStore } from '../src/state/sessionStore';
-import { loadSession } from '../src/services/storage/secureSession';
-
-const queryClient = new QueryClient();
+import { queryClient } from '../src/services/queryClient';
+import { useSessionHydration } from '../src/hooks/useSessionHydration';
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  const setSession = useSessionStore((state) => state.setSession);
-  const setHydrated = useSessionStore((state) => state.setHydrated);
-  const hydrated = useSessionStore((state) => state.hydrated);
+  const theme = colorScheme === 'dark' ? darkTheme : lightTheme;
+  const hydrated = useSessionHydration();
+  const background = theme.colors.background;
 
+  // Paint the native root view too, so the background behind and around the
+  // React tree (and during the splash hand-off) matches the active theme.
   useEffect(() => {
-    loadSession().then((session) => {
-      if (session) setSession(session);
-      setHydrated(true);
-    });
-  }, [setSession, setHydrated]);
+    void SystemUI.setBackgroundColorAsync(background).catch(() => undefined);
+  }, [background]);
 
   if (!hydrated) {
-    return null;
+    return <View style={[styles.root, { backgroundColor: background }]} />;
   }
 
   return (
     <ErrorBoundary>
-      <PaperProvider theme={colorScheme === 'dark' ? darkTheme : lightTheme}>
+      <PaperProvider theme={theme}>
         <QueryClientProvider client={queryClient}>
           <ToastProvider>
-            <Stack screenOptions={{ headerShown: false }} />
+            <View style={[styles.root, { backgroundColor: background }]}>
+              <Stack
+                screenOptions={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: background },
+                }}
+              />
+            </View>
           </ToastProvider>
         </QueryClientProvider>
       </PaperProvider>
     </ErrorBoundary>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+});

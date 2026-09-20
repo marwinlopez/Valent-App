@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
-import { Animated, StyleSheet, type ViewStyle } from 'react-native';
+import { Animated, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 import { useTheme } from 'react-native-paper';
 
 interface SkeletonProps {
   height?: number;
   width?: number | `${number}%`;
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
 }
 
 export function Skeleton({ height = 16, width = '100%', style }: SkeletonProps) {

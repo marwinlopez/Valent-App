@@ -1,9 +1,6 @@
 import { Redirect, Tabs } from 'expo-router';
-import { useEffect } from 'react';
 import { useSession } from '../../src/hooks/useSession';
-import { useAuthStatus } from '../../src/hooks/useAuthStatus';
-import { useSessionStore } from '../../src/state/sessionStore';
-import { deleteSession } from '../../src/services/storage/secureSession';
+import { useRevocationGuard } from '../../src/hooks/useRevocationGuard';
 import type { DeviceRole } from '../../src/types/api';
 
 const TABS_BY_ROLE: Record<DeviceRole, string[]> = {
@@ -15,21 +12,18 @@ const TABS_BY_ROLE: Record<DeviceRole, string[]> = {
 
 export default function AppLayout() {
   const session = useSession();
-  const clearSession = useSessionStore((state) => state.clearSession);
-  const { data: authStatus } = useAuthStatus();
+  useRevocationGuard();
 
-  useEffect(() => {
-    if (authStatus && authStatus.status !== 'ACTIVE') {
-      clearSession();
-      deleteSession();
-    }
-  }, [authStatus, clearSession]);
-
-  if (!session) {
+  // Only an ACTIVE session may mount the tab shell — a persisted PENDING or
+  // REVOKED device is ejected before it renders, not after /auth/me answers.
+  if (session?.status !== 'ACTIVE') {
     return <Redirect href="/(auth)/home" />;
   }
 
-  const visibleTabs = TABS_BY_ROLE[session.role];
+  // `?? []` because an unrecognized role must not throw here: the session is
+  // persisted, so a crash would repeat on every launch. `isValidSession`
+  // already rejects unknown roles at load time; this is the second layer.
+  const visibleTabs = TABS_BY_ROLE[session.role] ?? [];
 
   return (
     <Tabs screenOptions={{ headerShown: false }}>
@@ -47,7 +41,10 @@ export default function AppLayout() {
       />
       <Tabs.Screen
         name="configuracion"
-        options={{ href: visibleTabs.includes('configuracion') ? undefined : null, title: 'Configuración' }}
+        options={{
+          href: visibleTabs.includes('configuracion') ? undefined : null,
+          title: 'Configuración',
+        }}
       />
     </Tabs>
   );
