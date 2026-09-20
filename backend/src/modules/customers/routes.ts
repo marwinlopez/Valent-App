@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { evaluateCreditCheck } from './credit.js';
+import { signQrToken } from './qrToken.js';
 import { ApiError } from '../../plugins/errorHandler.js';
 
 const createCustomerSchema = z.object({
@@ -51,5 +52,18 @@ export async function registerCustomerRoutes(app: FastifyInstance): Promise<void
       creditLimit,
       requestedAmount,
     });
+  });
+
+  app.post('/customers/:id/qr-link', { preHandler: app.requireAuth }, async (req) => {
+    const { id } = req.params as { id: string };
+    const { rows } = await app.deps.pool.query('SELECT id FROM customers WHERE id = $1 AND account_id = $2', [
+      id,
+      req.auth!.accountId,
+    ]);
+    if (rows.length === 0) {
+      throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Customer not found');
+    }
+    const qrToken = signQrToken({ customerId: id, accountId: req.auth!.accountId }, app.deps.env.JWT_SECRET);
+    return { qrToken };
   });
 }
