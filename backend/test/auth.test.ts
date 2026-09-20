@@ -34,6 +34,27 @@ describe('POST /auth/link-device', () => {
     });
     expect(res.statusCode).toBe(422);
   });
+
+  it('rejects re-linking a revoked device', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const device = await insertDevice(app.deps.pool, account.id, { status: 'REVOKED', hardwareId: 'hw-revoked' });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/link-device',
+      payload: {
+        inviteToken: account.id,
+        hardwareId: 'hw-revoked',
+        deviceName: 'Pixel 8',
+        role: 'INVENTARIO',
+      },
+    });
+
+    expect(res.statusCode).toBe(403);
+    const check = await app.deps.pool.query('SELECT status FROM devices WHERE id = $1', [device.id]);
+    expect(check.rows[0].status).toBe('REVOKED');
+  });
 });
 
 describe('GET /auth/me', () => {
@@ -73,5 +94,31 @@ describe('GET /auth/me', () => {
     const res = await app.inject({ method: 'GET', url: '/auth/me', headers: { authorization: `Bearer ${jwt}` } });
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe('REVOKED');
+  });
+
+  it('returns a fresh, valid JWT with matching claims on success', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const link = await app.inject({
+      method: 'POST',
+      url: '/auth/link-device',
+      payload: { inviteToken: account.id, hardwareId: 'hw-refresh', deviceName: 'X', role: 'ADMIN' },
+    });
+    const { jwt: originalJwt } = link.json();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth/me',
+      headers: { authorization: `Bearer ${originalJwt}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(typeof body.jwt).toBe('string');
+
+    const { verifyDeviceToken } = await import('../src/modules/auth/jwt.js');
+    const claims = verifyDeviceToken(body.jwt, app.deps.env.JWT_SECRET);
+    expect(claims.accountId).toBe(account.id);
+    expect(claims.role).toBe('ADMIN');
+    expect(typeof claims.deviceId).toBe('string');
   });
 });

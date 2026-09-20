@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { signDeviceToken } from './jwt.js';
+import { signDeviceToken, type DeviceRole } from './jwt.js';
 import { ApiError } from '../../plugins/errorHandler.js';
 
 const linkDeviceSchema = z.object({
@@ -24,13 +24,16 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     const accountId = accountRows[0].id as string;
 
     const { rows: existing } = await app.deps.pool.query(
-      'SELECT id FROM devices WHERE account_id = $1 AND hardware_id = $2',
+      'SELECT id, status FROM devices WHERE account_id = $1 AND hardware_id = $2',
       [accountId, body.hardwareId]
     );
 
     let deviceId: string;
     if (existing.length > 0) {
       deviceId = existing[0].id as string;
+      if (existing[0].status === 'REVOKED') {
+        throw new ApiError(403, 'DEVICE_REVOKED', 'This device has been revoked and cannot re-link');
+      }
       await app.deps.pool.query('UPDATE devices SET name = $1, role = $2, status = $3 WHERE id = $4', [
         body.deviceName,
         body.role,
@@ -55,6 +58,12 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     if (rows.length === 0) {
       throw new ApiError(401, 'UNAUTHORIZED', 'Device no longer exists');
     }
-    return { role: rows[0].role, status: rows[0].status, accountId: auth.accountId };
+    const role = rows[0].role as string;
+    const status = rows[0].status as string;
+    const jwt = signDeviceToken(
+      { deviceId: auth.deviceId, accountId: auth.accountId, role: role as DeviceRole },
+      app.deps.env.JWT_SECRET
+    );
+    return { role, status, accountId: auth.accountId, jwt };
   });
 }
