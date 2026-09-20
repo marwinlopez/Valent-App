@@ -156,8 +156,8 @@ describe('POST /sales', () => {
     expect(Number(rows[0].current_debt_balance)).toBe(80);
   });
 
-  it('locks the customer row with BEGIN / SELECT ... FOR UPDATE / COMMIT on an approved credit sale', async () => {
-    const { app } = await buildTestApp();
+  it('locks the customer row with BEGIN / SELECT ... FOR UPDATE / COMMIT on an approved credit sale, and only appends to Sheets after the commit', async () => {
+    const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
     const { jwt } = await jwtFor(app, account.id);
     const { rows: levelRows } = await app.deps.pool.query(
@@ -183,6 +183,11 @@ describe('POST /sales', () => {
       };
       return client;
     });
+    // Recorded into the same list so the Sheets append can be ordered against
+    // the SQL, not just counted.
+    sheets.appendRow.mockImplementation(async () => {
+      queries.push('SHEETS_APPEND');
+    });
 
     const res = await app.inject({
       method: 'POST',
@@ -202,8 +207,65 @@ describe('POST /sales', () => {
     expect(queries[0]).toBe('BEGIN');
     expect(queries.some((q) => /FOR UPDATE/i.test(q) && /customers/i.test(q))).toBe(true);
     expect(queries.some((q) => /UPDATE customers/i.test(q))).toBe(true);
-    expect(queries[queries.length - 1]).toBe('COMMIT');
     expect(queries).not.toContain('ROLLBACK');
+
+    // The balance is committed before the sale is appended: a Sheets failure
+    // can then be compensated, whereas the reverse order can leave a sale in
+    // the ledger with no matching debt.
+    expect(queries.indexOf('COMMIT')).toBeGreaterThan(queries.indexOf('UPDATE customers SET current_debt_balance = current_debt_balance + $1 WHERE id = $2'));
+    expect(queries.indexOf('SHEETS_APPEND')).toBeGreaterThan(queries.indexOf('COMMIT'));
+    expect(queries[queries.length - 1]).toBe('SHEETS_APPEND');
+  });
+
+  it('reverses the credit balance when the Sheets append fails after the commit', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id);
+    const { rows: levelRows } = await app.deps.pool.query(
+      'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
+      [account.id, 'Oro', 300, 30]
+    );
+    const { rows: customerRows } = await app.deps.pool.query(
+      'INSERT INTO customers (account_id, name, loyalty_level_id, current_debt_balance) VALUES ($1, $2, $3, $4) RETURNING id',
+      [account.id, 'Cliente Credito', levelRows[0].id, 20]
+    );
+
+    // Reading the balance from *inside* the append proves the increase was
+    // already committed when the append ran -- so the reversal below is real
+    // compensation, not just a transaction rollback.
+    let balanceDuringAppend: number | null = null;
+    sheets.appendRow.mockImplementation(async () => {
+      const { rows } = await app.deps.pool.query('SELECT current_debt_balance FROM customers WHERE id = $1', [
+        customerRows[0].id,
+      ]);
+      balanceDuringAppend = Number(rows[0].current_debt_balance);
+      throw new Error('Sheets is unavailable');
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        customerId: customerRows[0].id,
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 50 }],
+        totalUsd: 50,
+        totalVes: 2100,
+        paymentMethod: 'CREDITO',
+        bcvRateUsed: 42,
+      },
+    });
+
+    // The caller gets a real error rather than a silent partial success...
+    expect(res.statusCode).toBe(500);
+    expect(balanceDuringAppend).toBe(70);
+
+    // ...and the customer is not left carrying debt for a sale that never
+    // reached the ledger.
+    const { rows } = await app.deps.pool.query('SELECT current_debt_balance FROM customers WHERE id = $1', [
+      customerRows[0].id,
+    ]);
+    expect(Number(rows[0].current_debt_balance)).toBe(20);
   });
 
   it('rolls back the transaction instead of committing when a credit sale is denied', async () => {

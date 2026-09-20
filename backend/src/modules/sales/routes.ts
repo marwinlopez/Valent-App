@@ -92,12 +92,6 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
           throw new ApiError(409, 'CREDIT_DENIED', check.reason ?? 'Credit not approved');
         }
 
-        // The Sheets append is a separate system, not part of the Postgres
-        // transaction -- but if it throws, the catch below still rolls back the
-        // Postgres side so we don't leave a stale row lock or an update without
-        // a corresponding sale record.
-        await appendSale();
-
         await client.query('UPDATE customers SET current_debt_balance = current_debt_balance + $1 WHERE id = $2', [
           body.totalUsd,
           customerId,
@@ -108,6 +102,39 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
         throw err;
       } finally {
         client.release();
+      }
+
+      // The Sheets append deliberately happens AFTER the commit, outside the
+      // transaction and the customer row lock.
+      //
+      // Appending first would fail in the dangerous direction: if the append
+      // succeeded and the UPDATE/COMMIT then failed, Postgres would roll back
+      // and leave a sale in the Sheets ledger with no matching debt on the
+      // customer -- silent under-billing that nothing surfaces. This way round,
+      // the worst case is a debt increase with no ledger row, which the
+      // compensation below undoes and which is in any case visible and
+      // correctable. It also means the pooled pg client is released before we
+      // wait on the network and on the account's whole SheetsQueue backlog,
+      // instead of holding a connection (and a row lock) for that long.
+      try {
+        await appendSale();
+      } catch (err) {
+        // Compensate: a single UPDATE is its own transaction, so this either
+        // fully reverses the optimistic increase or does nothing.
+        try {
+          await app.deps.pool.query(
+            'UPDATE customers SET current_debt_balance = current_debt_balance - $1 WHERE id = $2',
+            [body.totalUsd, customerId]
+          );
+        } catch (compensationErr) {
+          // The sale is now billed but not recorded. Surfacing the original
+          // error still beats swallowing it, but this needs a human.
+          app.log.error(
+            { err: compensationErr, saleId, customerId, amountUsd: body.totalUsd },
+            'Failed to reverse the credit balance after a failed Sheets append'
+          );
+        }
+        throw err;
       }
 
       return { saleId };
