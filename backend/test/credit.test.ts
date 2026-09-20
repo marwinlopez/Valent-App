@@ -71,6 +71,37 @@ describe('GET /customers/:id/credit-check', () => {
     expect(res.json().approved).toBe(false);
   });
 
+  it("ignores a loyalty level that belongs to another account", async () => {
+    const { app } = await buildTestApp();
+    const accountA = await insertAccount(app.deps.pool);
+    const accountB = await insertAccount(app.deps.pool);
+    const device = await insertDevice(app.deps.pool, accountA.id, { role: 'POST_VENTA' });
+    const jwt = signDeviceToken(
+      { deviceId: device.id, accountId: accountA.id, role: 'POST_VENTA' },
+      app.deps.env.JWT_SECRET
+    );
+
+    // A customer on account A pointing at account B's generous level -- the FK
+    // allows it, so the query must not.
+    const { rows: levelRows } = await app.deps.pool.query(
+      'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
+      [accountB.id, 'Oro Ajeno', 99999, 90]
+    );
+    const { rows: customerRows } = await app.deps.pool.query(
+      'INSERT INTO customers (account_id, name, loyalty_level_id, current_debt_balance) VALUES ($1, $2, $3, $4) RETURNING id',
+      [accountA.id, 'Infiltrado', levelRows[0].id, 0]
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/customers/${customerRows[0].id}/credit-check?amount=500`,
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().approved).toBe(false);
+    expect(res.json().availableCredit).toBe(0);
+  });
+
   it('rejects a non-numeric amount query param instead of approving', async () => {
     const { app } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);

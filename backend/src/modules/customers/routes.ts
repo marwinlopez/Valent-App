@@ -21,6 +21,20 @@ export async function registerCustomerRoutes(app: FastifyInstance): Promise<void
 
   app.post('/customers', { preHandler: app.requireAuth }, async (req) => {
     const body = createCustomerSchema.parse(req.body);
+
+    // loyalty_levels.credit_limit is what later authorizes credit sales, so a
+    // level from another tenant must never be attachable to this account's
+    // customer.
+    if (body.loyaltyLevelId) {
+      const { rows: levelRows } = await app.deps.pool.query(
+        'SELECT 1 FROM loyalty_levels WHERE id = $1 AND account_id = $2',
+        [body.loyaltyLevelId, req.auth!.accountId]
+      );
+      if (levelRows.length === 0) {
+        throw new ApiError(422, 'INVALID_LOYALTY_LEVEL', 'Loyalty level does not belong to this account');
+      }
+    }
+
     const { rows } = await app.deps.pool.query(
       `INSERT INTO customers (account_id, name, phone, loyalty_level_id)
        VALUES ($1, $2, $3, $4)
@@ -36,9 +50,12 @@ export async function registerCustomerRoutes(app: FastifyInstance): Promise<void
     const requestedAmount = Number(amount ?? '0');
 
     const { rows } = await app.deps.pool.query(
+      // The account_id filter belongs on the JOIN, not just on the customer:
+      // a level from another tenant must not contribute its credit limit even
+      // if a customer row somehow points at one.
       `SELECT c.current_debt_balance, l.credit_limit
        FROM customers c
-       LEFT JOIN loyalty_levels l ON l.id = c.loyalty_level_id
+       LEFT JOIN loyalty_levels l ON l.id = c.loyalty_level_id AND l.account_id = $2
        WHERE c.id = $1 AND c.account_id = $2`,
       [id, req.auth!.accountId]
     );

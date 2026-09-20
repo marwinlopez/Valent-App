@@ -77,10 +77,13 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
         }
 
         // loyalty_levels isn't mutated by this endpoint, so it doesn't need its
-        // own lock -- only the customer row's balance is contended.
-        const { rows: levelRows } = await client.query('SELECT credit_limit FROM loyalty_levels WHERE id = $1', [
-          rows[0].loyalty_level_id,
-        ]);
+        // own lock -- only the customer row's balance is contended. The
+        // account_id filter keeps another tenant's credit limit from ever
+        // authorizing a sale on this account.
+        const { rows: levelRows } = await client.query(
+          'SELECT credit_limit FROM loyalty_levels WHERE id = $1 AND account_id = $2',
+          [rows[0].loyalty_level_id, req.auth!.accountId]
+        );
         const creditLimit =
           levelRows.length === 0 || levelRows[0].credit_limit === null ? 0 : Number(levelRows[0].credit_limit);
         const check = evaluateCreditCheck({

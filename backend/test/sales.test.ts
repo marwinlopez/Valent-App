@@ -62,6 +62,39 @@ describe('POST /sales', () => {
     expect(sheets.appendRow).not.toHaveBeenCalled();
   });
 
+  it("does not honour a credit limit from another account's loyalty level", async () => {
+    const { app, sheets } = await buildTestApp();
+    const accountA = await insertAccount(app.deps.pool);
+    const accountB = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, accountA.id);
+    const { rows: levelRows } = await app.deps.pool.query(
+      'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
+      [accountB.id, 'Oro Ajeno', 99999, 90]
+    );
+    const { rows: customerRows } = await app.deps.pool.query(
+      'INSERT INTO customers (account_id, name, loyalty_level_id, current_debt_balance) VALUES ($1, $2, $3, $4) RETURNING id',
+      [accountA.id, 'Infiltrado', levelRows[0].id, 0]
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        customerId: customerRows[0].id,
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 500 }],
+        totalUsd: 500,
+        totalVes: 21000,
+        paymentMethod: 'CREDITO',
+        bcvRateUsed: 42,
+      },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('CREDIT_DENIED');
+    expect(sheets.appendRow).not.toHaveBeenCalled();
+  });
+
   it('accepts a credit sale within the limit and increases the customer balance', async () => {
     const { app } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
