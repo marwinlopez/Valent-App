@@ -2,6 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../../plugins/errorHandler.js';
 
+/* percentage is NUMERIC(6,2), which node-postgres hands back as a string
+   ("25.00") against real Postgres -- pg-mem happens to return a number, so
+   tests alone would not catch it. The API contract is numbers, never strings. */
+function toMarginRule(row: Record<string, unknown>) {
+  return { ...row, percentage: Number(row.percentage) };
+}
+
 const createSchema = z.object({
   level: z.enum(['CATEGORIA', 'SUBCATEGORIA', 'DEPARTAMENTO']),
   levelName: z.string().min(1),
@@ -18,7 +25,7 @@ export async function registerMarginsRoutes(app: FastifyInstance): Promise<void>
       'SELECT id, level, level_name, percentage FROM margin_rules WHERE account_id = $1 ORDER BY level, level_name',
       [req.auth!.accountId]
     );
-    return rows;
+    return rows.map(toMarginRule);
   });
 
   app.post('/margins', { preHandler: app.requireRole(['ADMIN']) }, async (req) => {
@@ -30,7 +37,7 @@ export async function registerMarginsRoutes(app: FastifyInstance): Promise<void>
        RETURNING id, level, level_name, percentage`,
       [req.auth!.accountId, body.level, body.levelName, body.percentage]
     );
-    return rows[0];
+    return toMarginRule(rows[0]);
   });
 
   app.put('/margins/:id', { preHandler: app.requireRole(['ADMIN']) }, async (req) => {
@@ -44,6 +51,6 @@ export async function registerMarginsRoutes(app: FastifyInstance): Promise<void>
     if (rows.length === 0) {
       throw new ApiError(404, 'MARGIN_RULE_NOT_FOUND', 'Margin rule not found');
     }
-    return rows[0];
+    return toMarginRule(rows[0]);
   });
 }

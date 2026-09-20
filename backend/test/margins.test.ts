@@ -32,6 +32,38 @@ describe('Margin rules', () => {
     expect(Number(update.json().percentage)).toBe(30);
   });
 
+  it('returns percentage as a JS number from every handler', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const device = await insertDevice(app.deps.pool, account.id, { role: 'ADMIN' });
+    const jwt = signDeviceToken({ deviceId: device.id, accountId: account.id, role: 'ADMIN' }, app.deps.env.JWT_SECRET);
+
+    // percentage is NUMERIC(6,2): node-postgres returns "25.00" for it against
+    // real Postgres, so these assert the type, not just the value. pg-mem is
+    // lenient here and would pass either way, which is exactly why the check
+    // has to be explicit.
+    const create = await app.inject({
+      method: 'POST',
+      url: '/margins',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { level: 'CATEGORIA', levelName: 'Bebidas', percentage: 25 },
+    });
+    expect(typeof create.json().percentage).toBe('number');
+    expect(create.json().percentage).toBe(25);
+
+    const list = await app.inject({ method: 'GET', url: '/margins', headers: { authorization: `Bearer ${jwt}` } });
+    expect(typeof list.json()[0].percentage).toBe('number');
+
+    const update = await app.inject({
+      method: 'PUT',
+      url: `/margins/${create.json().id}`,
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { percentage: 12.5 },
+    });
+    expect(typeof update.json().percentage).toBe('number');
+    expect(update.json().percentage).toBe(12.5);
+  });
+
   it('returns 404 when updating non-existent margin rule', async () => {
     const { app } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
