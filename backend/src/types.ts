@@ -11,13 +11,21 @@ export interface AppDeps {
   env: Env;
 }
 
+/* The token's claims plus the device status read from Postgres on this request
+   (null when the device row is gone). */
+export interface RequestAuth extends DeviceTokenPayload {
+  dbStatus: string | null;
+}
+
 declare module 'fastify' {
   interface FastifyInstance {
     deps: AppDeps;
     requireAuth: (req: FastifyRequest) => Promise<void>;
+    requireAuthAllowRevoked: (req: FastifyRequest) => Promise<void>;
     requireRole: (roles: DeviceRole[]) => (req: FastifyRequest) => Promise<void>;
+    invalidateDeviceStatus: (deviceId: string) => void;
   }
   interface FastifyRequest {
-    auth?: DeviceTokenPayload;
+    auth?: RequestAuth;
   }
 }

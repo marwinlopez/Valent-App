@@ -24,6 +24,7 @@ describe('runMigrations', () => {
         'customer_qr_links',
         'customers',
         'devices',
+        'invite_tokens',
         'loyalty_levels',
         'margin_rules',
       ].sort()

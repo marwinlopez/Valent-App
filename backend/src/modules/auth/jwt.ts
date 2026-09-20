@@ -1,6 +1,10 @@
 import jwt from 'jsonwebtoken';
 
-export type DeviceRole = 'ADMIN' | 'INVENTARIO' | 'POST_VENTA' | 'CLIENTE_PEDIDOS';
+/* Single source of truth for the role enum: mirrors the CHECK constraint on
+   devices.role / invite_tokens.role, and is what the zod schemas validate against. */
+export const DEVICE_ROLES = ['ADMIN', 'INVENTARIO', 'POST_VENTA', 'CLIENTE_PEDIDOS'] as const;
+
+export type DeviceRole = (typeof DEVICE_ROLES)[number];
 
 export interface DeviceTokenPayload {
   deviceId: string;

@@ -35,6 +35,73 @@ describe('GET /devices', () => {
   });
 });
 
+describe('POST /devices/invite', () => {
+  it('lets an ADMIN create an invite token', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await adminToken(app, account.id);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/devices/invite',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { role: 'POST_VENTA' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.role).toBe('POST_VENTA');
+    expect(body.inviteToken).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+
+    const { rows } = await app.deps.pool.query(
+      'SELECT account_id, role, used_at FROM invite_tokens WHERE id = $1',
+      [body.inviteToken]
+    );
+    expect(rows[0].account_id).toBe(account.id);
+    expect(rows[0].role).toBe('POST_VENTA');
+    expect(rows[0].used_at).toBeNull();
+  });
+
+  it('rejects a non-ADMIN caller', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const device = await insertDevice(app.deps.pool, account.id, { role: 'CLIENTE_PEDIDOS' });
+    const jwt = signDeviceToken(
+      { deviceId: device.id, accountId: account.id, role: 'CLIENTE_PEDIDOS' },
+      app.deps.env.JWT_SECRET
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/devices/invite',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { role: 'ADMIN' },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects an unauthenticated caller', async () => {
+    const { app } = await buildTestApp();
+    const res = await app.inject({ method: 'POST', url: '/devices/invite', payload: { role: 'ADMIN' } });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('rejects an unknown role', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await adminToken(app, account.id);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/devices/invite',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { role: 'SUPER_ADMIN' },
+    });
+    expect(res.statusCode).toBe(422);
+  });
+});
+
 describe('PATCH /devices/:id', () => {
   it('revokes a device', async () => {
     const { app } = await buildTestApp();
