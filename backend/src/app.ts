@@ -4,6 +4,7 @@ import type { AppDeps } from './types.js';
 import { errorHandlerPlugin } from './plugins/errorHandler.js';
 import { authGuardPlugin } from './plugins/authGuard.js';
 import { registerAuthRoutes } from './modules/auth/routes.js';
+import { registerDeviceRoutes } from './modules/devices/routes.js';
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -15,6 +16,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.get('/health', async () => ({ status: 'ok' }));
 
   app.register(registerAuthRoutes, { prefix: '/auth' });
+  app.register(registerDeviceRoutes);
 
   return app;
 }
