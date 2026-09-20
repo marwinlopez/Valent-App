@@ -31,14 +31,20 @@ export async function runMigrations(pool: Pool, migrationsDir: string): Promise<
     if (rows.length > 0) continue;
 
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-    await pool.query('BEGIN');
+    // Reserve a single client for the whole transaction: separate
+    // pool.query() calls can each be serviced by a different physical
+    // connection, so BEGIN/COMMIT would not be guaranteed atomic.
+    const client = await pool.connect();
     try {
-      await pool.query(sql);
-      await pool.query('INSERT INTO _migrations (name) VALUES ($1)', [file]);
-      await pool.query('COMMIT');
+      await client.query('BEGIN');
+      await client.query(sql);
+      await client.query('INSERT INTO _migrations (name) VALUES ($1)', [file]);
+      await client.query('COMMIT');
     } catch (err) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       throw err;
+    } finally {
+      client.release();
     }
   }
 }
