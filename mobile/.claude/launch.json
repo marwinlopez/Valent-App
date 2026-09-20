@@ -5,7 +5,7 @@
       "name": "Expo Web",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["expo", "start", "--web"],
-      "port": 19006
+      "port": 8081
     }
   ]
 }

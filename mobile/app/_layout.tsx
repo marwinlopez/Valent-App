@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, ThemeProvider } from 'expo-router';
 import { PaperProvider } from 'react-native-paper';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { StyleSheet, View, useColorScheme } from 'react-native';
@@ -7,12 +7,15 @@ import * as SystemUI from 'expo-system-ui';
 import { ErrorBoundary } from '../src/errors/ErrorBoundary';
 import { ToastProvider } from '../src/feedback/ToastProvider';
 import { lightTheme, darkTheme } from '../src/theme/theme';
+import { navigationLightTheme, navigationDarkTheme } from '../src/theme/navigationTheme';
 import { queryClient } from '../src/services/queryClient';
 import { useSessionHydration } from '../src/hooks/useSessionHydration';
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  const theme = colorScheme === 'dark' ? darkTheme : lightTheme;
+  const isDark = colorScheme === 'dark';
+  const theme = isDark ? darkTheme : lightTheme;
+  const navigationTheme = isDark ? navigationDarkTheme : navigationLightTheme;
   const hydrated = useSessionHydration();
   const background = theme.colors.background;
 
@@ -31,14 +34,16 @@ export default function RootLayout() {
       <PaperProvider theme={theme}>
         <QueryClientProvider client={queryClient}>
           <ToastProvider>
-            <View style={[styles.root, { backgroundColor: background }]}>
-              <Stack
-                screenOptions={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: background },
-                }}
-              />
-            </View>
+            <ThemeProvider value={navigationTheme}>
+              <View style={[styles.root, { backgroundColor: background }]}>
+                <Stack
+                  screenOptions={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: background },
+                  }}
+                />
+              </View>
+            </ThemeProvider>
           </ToastProvider>
         </QueryClientProvider>
       </PaperProvider>

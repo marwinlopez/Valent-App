@@ -5,7 +5,7 @@
       "name": "Expo Web",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "mobile", "run", "web"],
-      "port": 19006
+      "port": 8081
     }
   ]
 }
