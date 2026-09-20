@@ -51,4 +51,35 @@ describe('PATCH /devices/:id', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe('REVOKED');
   });
+
+  it('returns 404 when device does not exist', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await adminToken(app, account.id);
+    const nonExistentId = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/devices/${nonExistentId}`,
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { status: 'REVOKED' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('returns 404 when device belongs to another account', async () => {
+    const { app } = await buildTestApp();
+    const accountA = await insertAccount(app.deps.pool);
+    const accountB = await insertAccount(app.deps.pool);
+    const targetDevice = await insertDevice(app.deps.pool, accountB.id);
+    const jwt = await adminToken(app, accountA.id);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/devices/${targetDevice.id}`,
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { status: 'REVOKED' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
 });

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { ApiError } from '../../plugins/errorHandler.js';
 
 const patchDeviceSchema = z.object({
   status: z.enum(['PENDING', 'ACTIVE', 'REVOKED']).optional(),
@@ -27,6 +28,9 @@ export async function registerDeviceRoutes(app: FastifyInstance): Promise<void> 
        RETURNING id, hardware_id, role, name, status, linked_at`,
       [body.status ?? null, body.name ?? null, id, req.auth!.accountId]
     );
+    if (rows.length === 0) {
+      throw new ApiError(404, 'DEVICE_NOT_FOUND', 'Device not found');
+    }
     return rows[0];
   });
 }
