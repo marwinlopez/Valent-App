@@ -52,6 +52,8 @@ export default function AppLayout() {
       />
       {/* Reached only via router.push from inventario.tsx — never a tab. */}
       <Tabs.Screen name="escanear" options={{ href: null, title: 'Escanear' }} />
+      {/* Reached only via router.push from post-venta.tsx — never a tab. */}
+      <Tabs.Screen name="vender-escanear" options={{ href: null, title: 'Escanear' }} />
       {/* `producto/` has its own _layout.tsx (a Stack), so the whole
           subdirectory collapses into this single entry — hiding it here
           hides [barcode].tsx and nuevo.tsx together, present or not. */}
