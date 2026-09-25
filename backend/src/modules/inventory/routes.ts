@@ -16,6 +16,21 @@ interface ProductRow {
   stock: number;
 }
 
+/**
+ * A sheet cell as a number, or NaN when it isn't one.
+ *
+ * Never `?? 0`: Sheets omits trailing empty cells, so a row whose cost was
+ * never filled arrives as a short array, and a substituted 0 reaches the app
+ * as "Precio: 0 Bs" stated as fact. A Spanish-locale sheet can also hold
+ * `2,5` or `10 unidades`. NaN serializes to null over JSON, which is exactly
+ * what the client's "report a missing input, never invent a price" check
+ * already knows how to read.
+ */
+function num(raw: string | undefined): number {
+  const n = Number(raw);
+  return raw === undefined || raw === '' || !Number.isFinite(n) ? NaN : n;
+}
+
 function parseRow(raw: string[], rowIndex: number): ProductRow {
   return {
     rowIndex,
@@ -24,8 +39,8 @@ function parseRow(raw: string[], rowIndex: number): ProductRow {
     brand: raw[2] ?? '',
     department: raw[3] ?? '',
     unit: raw[4] ?? '',
-    costUsd: Number(raw[5] ?? 0),
-    stock: Number(raw[6] ?? 0),
+    costUsd: num(raw[5]),
+    stock: num(raw[6]),
   };
 }
 
@@ -176,6 +191,17 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
       const product = await findProductRow(app, spreadsheetId, barcode);
       if (!product) {
         throw new ApiError(404, 'PRODUCT_NOT_FOUND', `No product with barcode ${barcode}`);
+      }
+      // A cell holding `2,5` or `10 unidades` parses to NaN. Without this,
+      // NaN + delta is NaN, `NaN < 0` is false so the floor check passes, and
+      // the NaN is written back as null — erasing the stock cell and
+      // answering 200.
+      if (!Number.isFinite(product.stock)) {
+        throw new ApiError(
+          409,
+          'INVALID_STOCK_VALUE',
+          `The stock cell for barcode ${barcode} is not a number; fix it in the sheet before adjusting`
+        );
       }
       const newStock = product.stock + delta;
       if (newStock < 0) {

@@ -34,6 +34,39 @@ describe('GET /products', () => {
     });
   });
 
+  it('reports an empty cost cell as null rather than inventing a zero', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'Marca X', 'Lacteos', 'unidad', '', '10', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/products?barcode=123',
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    expect(res.statusCode).toBe(200);
+    // NaN over the wire is null, which the client reads as "missing cost".
+    expect(res.json().costUsd).toBeNull();
+  });
+
+  it('reports the missing cells of a short row as null (Sheets omits trailing empties)', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'Marca X', 'Lacteos', 'unidad']]);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/products?barcode=123',
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ costUsd: null, stock: null });
+  });
+
   it('returns 404 when the barcode is not found', async () => {
     const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
@@ -157,6 +190,26 @@ describe('PATCH /products/:barcode/stock', () => {
     const [, range, row] = sheets.updateRow.mock.calls[0];
     expect(range).toBe('Productos!A2:I2');
     expect(row[6]).toBe(15);
+  });
+
+  it('rejects an adjustment against a non-numeric stock cell instead of writing NaN', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([
+      ['789', 'Pan', 'Marca Z', 'Panaderia', 'unidad', '0.8', '10 unidades', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/products/789/stock',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { delta: 5 },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INVALID_STOCK_VALUE');
+    expect(sheets.updateRow).not.toHaveBeenCalled();
   });
 });
 
