@@ -106,4 +106,21 @@ describe('useRevocationGuard', () => {
 
     expect(signIn).not.toHaveBeenCalled();
   });
+
+  it('signs out when /auth/me reports a different accountId', async () => {
+    // signOut is mocked at the top of this file; make this one call behave
+    // like the real thing so the store-state assertion below means something.
+    (signOut as jest.Mock).mockImplementationOnce(async () => {
+      useSessionStore.getState().clearSession();
+    });
+    useSessionStore.setState({
+      session: { deviceId: 'd1', accountId: 'account-a', role: 'ADMIN', status: 'ACTIVE', jwt: 'jwt' },
+      hydrated: true,
+    });
+    mockAuthStatus({ role: 'ADMIN', status: 'ACTIVE', accountId: 'account-b', jwt: 'jwt' });
+
+    await renderHook(() => useRevocationGuard());
+
+    await waitFor(() => expect(useSessionStore.getState().session).toBeNull());
+  });
 });

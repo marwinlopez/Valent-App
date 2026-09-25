@@ -25,11 +25,19 @@ export function useRevocationGuard(): void {
     }
 
     if (authStatus.status !== 'ACTIVE') {
-      void signOut().catch(() => undefined);
+      void signOut(authStatus.status).catch(() => undefined);
       return;
     }
 
     if (!session) {
+      return;
+    }
+
+    if (authStatus.accountId !== session.accountId) {
+      // A different tenant behind the same JWT is a re-link, not a refresh.
+      // Query keys carry no accountId, so silently adopting it would render
+      // the previous account's cached rows.
+      void signOut('EXPIRED').catch(() => undefined);
       return;
     }
 

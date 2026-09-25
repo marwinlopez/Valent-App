@@ -1,10 +1,11 @@
 jest.mock('../../src/services/storage/secureSession', () => ({
   loadSession: jest.fn(),
+  deleteSession: jest.fn(),
 }));
 
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useSessionHydration } from '../../src/hooks/useSessionHydration';
-import { loadSession } from '../../src/services/storage/secureSession';
+import { loadSession, deleteSession } from '../../src/services/storage/secureSession';
 import { useSessionStore, type Session } from '../../src/state/sessionStore';
 
 const stored: Session = {
@@ -17,8 +18,9 @@ const stored: Session = {
 
 describe('useSessionHydration', () => {
   beforeEach(() => {
-    useSessionStore.setState({ session: null, hydrated: false });
+    useSessionStore.setState({ session: null, hydrated: false, endedReason: null });
     (loadSession as jest.Mock).mockReset();
+    (deleteSession as jest.Mock).mockReset().mockResolvedValue(undefined);
   });
 
   it('puts a stored session into the store and reports hydrated', async () => {
@@ -58,5 +60,22 @@ describe('useSessionHydration', () => {
     rerender({});
 
     expect(loadSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes a stored non-ACTIVE session instead of adopting it, and records why', async () => {
+    (loadSession as jest.Mock).mockResolvedValue({
+      deviceId: 'd1',
+      accountId: 'a1',
+      role: 'ADMIN',
+      status: 'REVOKED',
+      jwt: 'jwt',
+    });
+
+    await renderHook(() => useSessionHydration());
+
+    await waitFor(() => expect(useSessionStore.getState().hydrated).toBe(true));
+    expect(useSessionStore.getState().session).toBeNull();
+    expect(useSessionStore.getState().endedReason).toBe('REVOKED');
+    expect(deleteSession).toHaveBeenCalled();
   });
 });

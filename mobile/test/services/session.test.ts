@@ -62,4 +62,15 @@ describe('session service', () => {
     resolveDelete();
     await pending;
   });
+
+  it('signOut records the reason the session ended', async () => {
+    await signOut('REVOKED');
+    expect(useSessionStore.getState().endedReason).toBe('REVOKED');
+  });
+
+  it('signIn clears any previous ended-reason', async () => {
+    await signOut('EXPIRED');
+    await signIn({ deviceId: 'd1', accountId: 'a1', role: 'ADMIN', status: 'ACTIVE', jwt: 'j' });
+    expect(useSessionStore.getState().endedReason).toBeNull();
+  });
 });

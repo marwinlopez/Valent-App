@@ -161,4 +161,41 @@ describe('apiFetch', () => {
 
     await expect(apiFetch('/devices/d1')).resolves.toBeNull();
   });
+
+  it('still throws ApiRequestError on a 401 when clearing storage fails', async () => {
+    (SecureStore.deleteItemAsync as jest.Mock).mockRejectedValueOnce(new Error('keychain locked'));
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: { code: 'UNAUTHORIZED', message: 'Invalid token' } }),
+    });
+
+    await expect(apiFetch('/customers')).rejects.toBeInstanceOf(ApiRequestError);
+  });
+
+  it('throws ApiRequestError when a success response body is not valid JSON', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    });
+
+    await expect(apiFetch('/products')).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE_BODY',
+    });
+  });
+
+  it('resolves to null for a 204 with no body', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 204,
+      json: async () => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      },
+    });
+
+    await expect(apiFetch('/whatever')).resolves.toBeNull();
+  });
 });

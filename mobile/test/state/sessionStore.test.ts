@@ -31,4 +31,10 @@ describe('useSessionStore', () => {
     useSessionStore.getState().clearSession();
     expect(useSessionStore.getState().session).toBeNull();
   });
+
+  it('clearSession does not touch endedReason — signOut relies on setting it after clearing', () => {
+    useSessionStore.getState().setEndedReason('REVOKED');
+    useSessionStore.getState().clearSession();
+    expect(useSessionStore.getState().endedReason).toBe('REVOKED');
+  });
 });

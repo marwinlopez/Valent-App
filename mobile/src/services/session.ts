@@ -1,4 +1,4 @@
-import { useSessionStore, type Session } from '../state/sessionStore';
+import { useSessionStore, type Session, type SessionEndReason } from '../state/sessionStore';
 import { saveSession, deleteSession } from './storage/secureSession';
 import { queryClient } from './queryClient';
 
@@ -11,6 +11,8 @@ import { queryClient } from './queryClient';
  */
 export async function signIn(session: Session): Promise<void> {
   useSessionStore.getState().setSession(session);
+  // A fresh sign-in must not leave a stale "your device was revoked" banner up.
+  useSessionStore.getState().setEndedReason(null);
   await saveSession(session);
 }
 
@@ -20,9 +22,14 @@ export async function signIn(session: Session): Promise<void> {
  * The cache clear is not optional — query keys carry no `accountId`, so cached
  * rows from the previous account would otherwise be rendered on first paint
  * after the device is re-linked to a different one.
+ *
+ * `reason`, when given, records why the session ended so Home can explain it.
  */
-export async function signOut(): Promise<void> {
+export async function signOut(reason?: SessionEndReason): Promise<void> {
   useSessionStore.getState().clearSession();
+  if (reason) {
+    useSessionStore.getState().setEndedReason(reason);
+  }
   queryClient.clear();
   await deleteSession();
 }
