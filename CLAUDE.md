@@ -116,26 +116,34 @@ transacción de venta a crédito vs. escritura en Sheets.)
       `any`, ErrorBoundary, Toasts y Skeletons. Los hooks `useSheetsSync`/`useCreditValidation`/
       `useBCVRate` NO se construyeron por YAGNI (no tienen consumidor todavía) — se agregan en el
       sub-proyecto que primero los necesite, siguiendo el patrón de `useAuthStatus`.
-- [ ] Sub-proyecto 2: Auth + vinculación de dispositivo (pantallas Home, Hardware ID vía
-      expo-application/expo-device, flujo de token de invitación). Al empezar, cerrar estos
-      3 pendientes que la revisión final dejó parqueados:
-      - `client.ts`: el `await signOut()` del path 401 no está protegido — si
-        `SecureStore.deleteItemAsync` falla, `apiFetch` rechaza con un error de almacenamiento
-        en vez de `ApiRequestError` (una línea: `.catch(() => undefined)`).
-      - `client.ts`: `readJsonBody` se traga cualquier fallo de parseo en respuestas exitosas, así
-        que `apiFetch<T>` puede resolver a `null` mientras su tipo promete `T`. Limitarlo a 204.
-      - Una sesión no-ACTIVE guardada en disco no tiene hoy camino de limpieza (`app/index.tsx` la
-        redirige a Home antes de que monte `(app)/`, y `useRevocationGuard` solo vive bajo `(app)/`).
-        Hoy es inalcanzable, pero se vuelve real en cuanto este sub-proyecto persista una sesión
-        PENDING tras vincular un dispositivo.
-      - Además: `useRevocationGuard` ni adopta ni *detecta* un cambio de `accountId` al refrescar.
-        Se vuelve importante en cuanto algo lea `session.accountId`, porque las query keys no
-        llevan el tenant.
+- [x] Sub-proyecto 2: Auth + vinculación de dispositivo — hecho. Flujo de vinculación por invite
+      token (QR con `expo-camera` + entrada manual de respaldo), nombre de dispositivo sugerido y
+      editable, errores mapeados por código del backend, pantalla ADMIN para generar invitaciones
+      con QR, Hardware ID por plataforma, y el script `npm run create-invite` que resuelve el
+      arranque del primer ADMIN de una cuenta. Cerró además los 4 pendientes de sesión que había
+      dejado el sub-proyecto 1.
+      **PENDIENTE DE VERIFICACIÓN EN VIVO:** el flujo completo nunca se corrió punta a punta (no
+      hay `backend/.env`). Sin correr: el round trip real de `POST /devices/invite`, un escaneo de
+      cámara real, y la corrección de navegación observada en la app. Tres de los cuatro hallazgos
+      de la revisión final eran justo lo que una sola corrida en vivo detecta primero.
 - [ ] Sub-proyecto 3: Inventario (lista, escáner de código de barras, detalle/nuevo producto)
       — nota: el backend hoy solo expone GET/POST /products y PATCH stock; faltan
       `GET /products/search?q=` y `PUT /products/:barcode` del spec original, no
       implementados en ningún task del plan del backend (defecto del plan, detectado en la
       revisión final) — implementar en el backend antes o junto con este sub-proyecto.
+      Al empezar, cerrar estos 3 pendientes que dejó el sub-proyecto 2:
+      - `mobile/test/services/session.test.ts:71` quedó vacuo: `beforeEach` no resetea
+        `endedReason`, así que bajo "gana la primera razón" el `signOut('EXPIRED')` del propio
+        test es un no-op y el `toBeNull()` no prueba nada. Dos líneas: resetear en `beforeEach`
+        y agregar el caso "una segunda razón no pisa a la primera" — que es además lo único que
+        realmente fijaría ese arreglo.
+      - `app/index.tsx` manda `CLIENTE_PEDIDOS` a Home, así que un dispositivo recién vinculado
+        con ese rol rebota a "Vincular dispositivo" con sesión ACTIVE y sin explicación. El
+        sub-proyecto 6 dueña la pantalla real, pero el callejón sin salida ya es alcanzable
+        desde la corrección de navegación.
+      - `signIn()` no es atómico: `setSession` es síncrono y `saveSession` se espera, así que un
+        fallo de SecureStore deja la app con sesión en memoria, mostrando error, sin navegar y
+        sin nada en disco.
 - [ ] Sub-proyecto 4: POS/PostVenta (checkout, métodos de pago, validación de crédito en vivo)
       — nota: las ventas hoy no ajustan stock automáticamente; el cliente debe llamar
       PATCH /products/:barcode/stock por separado, no atómico con la venta.
