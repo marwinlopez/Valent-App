@@ -10,6 +10,16 @@ describe('calculatePriceVes', () => {
     expect(calculatePriceVes(1.117, 0, 1)).toEqual({ ok: true, priceVes: 1.12 });
   });
 
+  it('rounds a half-cent up instead of down (float arithmetic got this wrong)', () => {
+    // 0.47 * 1.05 * 10 is exactly 4.935; the float product is 4.934999999999999.
+    expect(calculatePriceVes(0.47, 5, 10)).toEqual({ ok: true, priceVes: 4.94 });
+  });
+
+  it('refuses a margin at or below -100% instead of pricing at or below zero', () => {
+    expect(calculatePriceVes(10, -100, 40)).toEqual({ ok: false, missing: 'margin' });
+    expect(calculatePriceVes(10, -150, 40)).toEqual({ ok: false, missing: 'margin' });
+  });
+
   it('handles a zero margin', () => {
     expect(calculatePriceVes(3, 0, 10)).toEqual({ ok: true, priceVes: 30 });
   });
