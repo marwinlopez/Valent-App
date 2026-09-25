@@ -11,6 +11,6 @@ export function filterProducts(products: Product[], query: string): Product[] {
     (p) =>
       p.name.toLowerCase().includes(needle) ||
       p.brand.toLowerCase().includes(needle) ||
-      p.barcode.includes(needle)
+      p.barcode.toLowerCase().includes(needle)
   );
 }
