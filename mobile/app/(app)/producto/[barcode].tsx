@@ -10,12 +10,21 @@ import { Button } from '../../../src/components/ui/Button';
 import { TextInput } from '../../../src/components/ui/TextInput';
 import { EmptyState } from '../../../src/components/ui/EmptyState';
 import { useToast } from '../../../src/feedback/ToastProvider';
+import { ApiRequestError } from '../../../src/services/api/client';
 
 const MISSING_INPUT_MESSAGE = {
   bcvRate: 'Falta la tasa BCV del día para calcular el precio.',
   margin: 'Este departamento no tiene un margen configurado.',
   cost: 'El costo del producto no es válido.',
 } as const;
+
+// Messages are chosen per backend error code, same pattern as useDeviceLinking's
+// MESSAGE_BY_CODE: a dropped connection and "your number would take stock below
+// zero" are different problems and deserve different toasts.
+const STOCK_MESSAGE_BY_CODE: Record<string, string> = {
+  INSUFFICIENT_STOCK: 'No hay suficiente existencia para ese ajuste.',
+};
+const STOCK_FALLBACK_MESSAGE = 'No se pudo ajustar el stock.';
 
 export default function ProductoDetalle() {
   const { barcode } = useLocalSearchParams<{ barcode: string }>();
@@ -86,8 +95,9 @@ export default function ProductoDetalle() {
       await adjust.mutateAsync({ barcode: product.barcode, delta: value });
       setDelta('');
       showToast('Stock actualizado.');
-    } catch {
-      showToast('No se pudo ajustar el stock.');
+    } catch (err) {
+      const code = err instanceof ApiRequestError ? err.code : null;
+      showToast((code && STOCK_MESSAGE_BY_CODE[code]) ?? STOCK_FALLBACK_MESSAGE);
     }
   };
 
