@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 import type { Pool } from 'pg';
 import { DEVICE_ROLES, type DeviceRole } from '../src/modules/auth/jwt.js';
 
@@ -43,7 +44,7 @@ export async function createInvite(
 }
 
 /* CLI: npm run create-invite -- --account <uuid> --role ADMIN */
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const valueOf = (flag: string): string | undefined => {
     const index = args.indexOf(flag);
