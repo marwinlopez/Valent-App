@@ -64,3 +64,20 @@ export interface MarginRule {
   level_name: string;
   percentage: number;
 }
+
+/** snake_case because that is what this backend endpoint actually returns —
+ *  its response casing is inconsistent across endpoints and normalising it is
+ *  tracked as backend debt, not papered over here. */
+export interface Customer {
+  id: string;
+  name: string;
+  phone: string | null;
+  loyalty_level_id: string | null;
+  current_debt_balance: number;
+}
+
+export interface CreditCheckResponse {
+  approved: boolean;
+  availableCredit: number;
+  reason: string | null;
+}
