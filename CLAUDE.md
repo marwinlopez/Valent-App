@@ -126,27 +126,27 @@ transacción de venta a crédito vs. escritura en Sheets.)
       hay `backend/.env`). Sin correr: el round trip real de `POST /devices/invite`, un escaneo de
       cámara real, y la corrección de navegación observada en la app. Tres de los cuatro hallazgos
       de la revisión final eran justo lo que una sola corrida en vivo detecta primero.
-- [ ] Sub-proyecto 3: Inventario (lista, escáner de código de barras, detalle/nuevo producto)
-      — nota: el backend hoy solo expone GET/POST /products y PATCH stock; faltan
-      `GET /products/search?q=` y `PUT /products/:barcode` del spec original, no
-      implementados en ningún task del plan del backend (defecto del plan, detectado en la
-      revisión final) — implementar en el backend antes o junto con este sub-proyecto.
-      Al empezar, cerrar estos 3 pendientes que dejó el sub-proyecto 2:
-      - `mobile/test/services/session.test.ts:71` quedó vacuo: `beforeEach` no resetea
-        `endedReason`, así que bajo "gana la primera razón" el `signOut('EXPIRED')` del propio
-        test es un no-op y el `toBeNull()` no prueba nada. Dos líneas: resetear en `beforeEach`
-        y agregar el caso "una segunda razón no pisa a la primera" — que es además lo único que
-        realmente fijaría ese arreglo.
-      - `app/index.tsx` manda `CLIENTE_PEDIDOS` a Home, así que un dispositivo recién vinculado
-        con ese rol rebota a "Vincular dispositivo" con sesión ACTIVE y sin explicación. El
-        sub-proyecto 6 dueña la pantalla real, pero el callejón sin salida ya es alcanzable
-        desde la corrección de navegación.
-      - `signIn()` no es atómico: `setSession` es síncrono y `saveSession` se espera, así que un
-        fallo de SecureStore deja la app con sesión en memoria, mostrando error, sin navegar y
-        sin nada en disco.
+- [x] Sub-proyecto 3: Inventario — hecho. Lista con búsqueda en el dispositivo, escáner de código
+      de barras (componente `BarcodeScanner` reutilizable), ficha con edición y ajuste de stock,
+      y alta de productos. Agregó al backend la rama de lista de `GET /products` y
+      `PUT /products/:barcode`, y cerró los 3 pendientes del sub-proyecto 2.
+      **PENDIENTE DE VERIFICACIÓN EN VIVO** (igual que el sub-proyecto 2, no hay `backend/.env`):
+      la migración `003_stock_adjustments.sql` nunca corrió contra Postgres real, y ni los 409 ni
+      el registro de idempotencia ni el round trip `NUMERIC`→string se ejercitaron fuera de pg-mem.
 - [ ] Sub-proyecto 4: POS/PostVenta (checkout, métodos de pago, validación de crédito en vivo)
       — nota: las ventas hoy no ajustan stock automáticamente; el cliente debe llamar
       PATCH /products/:barcode/stock por separado, no atómico con la venta.
+      Reutiliza tres cosas del sub-proyecto 3; conviene saber esto antes de construir encima:
+      - `calculatePriceVes` ya usa aritmética entera (BigInt a escala 1e-4). Si el backend alguna
+        vez recalcula totales para contrastarlos con los que manda el cliente, tiene que usar la
+        misma escala y el mismo medio-arriba, o el 0,7% de las líneas no va a cuadrar.
+      - `PATCH /products/:barcode/stock` ahora exige un `requestId` y es idempotente ante los
+        reintentos de la cola. Pero un humano que vuelve a presionar tras un fallo visible genera
+        un `requestId` NUEVO, así que un doble toque después de una respuesta perdida sí duplica.
+        Es la semántica correcta para "un ajuste nuevo" — tenerlo presente al descontar por venta.
+      - El registro de idempotencia resuelve por heurística cuando la hoja no coincide ni con el
+        stock previo ni con el nuevo (hoy queda logueado, no silencioso). Y `prev_stock` es
+        `NUMERIC(14,4)`: un stock con más de 4 decimales nunca va a coincidir.
 - [ ] Sub-proyecto 5: Crédito y Fidelidad (UI en Configuración sobre los endpoints ya
       existentes en el backend)
 - [ ] Sub-proyecto 6: QR de cliente (generación con react-native-qrcode-svg, escaneo con
