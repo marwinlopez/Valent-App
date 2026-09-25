@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { router } from 'expo-router';
 import { linkDevice, readDeviceIdFromJwt } from '../services/api/auth';
 import { getHardwareId, getSuggestedDeviceName } from '../services/device/hardwareId';
 import { signIn } from '../services/session';
@@ -19,6 +20,7 @@ const MESSAGE_BY_CODE: Record<string, string> = {
   INVALID_INVITE_TOKEN: 'Ese código no es válido, ya fue usado o expiró. Pídele al administrador uno nuevo.',
   DEVICE_LIMIT_REACHED: 'Esta cuenta ya llegó a su límite de dispositivos vinculados.',
   DEVICE_REVOKED: 'Este dispositivo fue revocado. Contacta al administrador.',
+  VALIDATION_ERROR: 'Este dispositivo no pudo enviar sus datos de identificación. Inténtalo de nuevo y, si sigue igual, avísale al administrador.',
 };
 
 const FALLBACK_MESSAGE = 'No se pudo vincular el dispositivo. Revisa tu conexión e inténtalo de nuevo.';
@@ -42,7 +44,7 @@ export function useDeviceLinking() {
 
   /** Validates locally first: the backend answers 422 either way, but a round
    *  trip to be told "invalid" is slower and vaguer than saying so here. */
-  const submitToken = useCallback(async (candidate: string) => {
+  const submitToken = useCallback((candidate: string) => {
     const trimmed = candidate.trim();
     if (!UUID_PATTERN.test(trimmed)) {
       setError(INVALID_FORMAT_MESSAGE);
@@ -71,13 +73,24 @@ export function useDeviceLinking() {
         // The endpoint returns neither deviceId nor status: deviceId is read
         // from the JWT (an untrusted local hint, never an authorization input),
         // and link-device's success path always leaves the device ACTIVE.
+        // An undecodable JWT has to fail the link: a session with an empty
+        // deviceId is rejected on the next launch and silently unlinks.
+        const deviceId = readDeviceIdFromJwt(response.jwt);
+        if (!deviceId) {
+          throw new Error('El JWT recibido no trae deviceId.');
+        }
+
         await signIn({
-          deviceId: readDeviceIdFromJwt(response.jwt) ?? '',
+          deviceId,
           accountId: response.accountId,
           role: response.role,
           status: 'ACTIVE',
           jwt: response.jwt,
         });
+        // The route gate in app/index.tsx is a <Redirect> that already unmounted
+        // at launch, so it never re-evaluates on its own. Remounting it is what
+        // routes this freshly linked device to its role's first tab.
+        router.replace('/');
       } catch (err) {
         const code = err instanceof ApiRequestError ? err.code : null;
         setError((code && MESSAGE_BY_CODE[code]) ?? FALLBACK_MESSAGE);
