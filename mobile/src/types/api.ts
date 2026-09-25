@@ -81,3 +81,26 @@ export interface CreditCheckResponse {
   availableCredit: number;
   reason: string | null;
 }
+
+export type PaymentMethod =
+  | 'EFECTIVO_USD'
+  | 'EFECTIVO_VES'
+  | 'PAGO_MOVIL'
+  | 'PUNTO_DE_VENTA'
+  | 'CREDITO';
+
+export interface SaleItem {
+  barcode: string;
+  name: string;
+  quantity: number;
+  unitPriceUsd: number;
+}
+
+export interface CreateSaleRequest {
+  customerId?: string;
+  items: SaleItem[];
+  totalUsd: number;
+  totalVes: number;
+  paymentMethod: PaymentMethod;
+  bcvRateUsed: number;
+}
