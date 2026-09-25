@@ -40,12 +40,15 @@ export interface Product {
   brand: string;
   department: string;
   unit: string;
-  costUsd: number;
-  stock: number;
+  costUsd: number | null;
+  stock: number | null;
 }
 
-export type CreateProductRequest = Product;
-export type UpdateProductRequest = Omit<Product, 'barcode' | 'stock'>;
+// Requests, unlike the `Product` the backend hands back, always carry a
+// validated number here — the screens that build these already reject a
+// blank/non-numeric cost or stock before calling the mutation.
+export type CreateProductRequest = Omit<Product, 'costUsd' | 'stock'> & { costUsd: number; stock: number };
+export type UpdateProductRequest = Omit<Product, 'barcode' | 'stock' | 'costUsd'> & { costUsd: number };
 
 export interface BcvRateResponse {
   rateDate: string;

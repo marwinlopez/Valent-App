@@ -99,7 +99,7 @@ export default function ProductoDetalle() {
       brand: product.brand,
       department: product.department,
       unit: product.unit,
-      costUsd: String(product.costUsd),
+      costUsd: product.costUsd == null ? '' : String(product.costUsd),
     });
     setEditing(true);
   };
@@ -160,7 +160,7 @@ export default function ProductoDetalle() {
 
       <Divider />
 
-      <Text variant="bodyMedium">Costo: {product.costUsd} USD</Text>
+      <Text variant="bodyMedium">Costo: {product.costUsd ?? '—'} USD</Text>
       {/* A rate or margin query still in flight is not a missing input, and a
           failed /margins is not "this department has no margin" — either one
           stated as a diagnosis sends someone to Configuración to fix a margin
@@ -177,7 +177,7 @@ export default function ProductoDetalle() {
         </Text>
       )}
       <Text variant="bodyMedium">
-        Existencia: {product.stock} {product.unit}
+        Existencia: {product.stock ?? '—'} {product.unit}
       </Text>
 
       <Divider />

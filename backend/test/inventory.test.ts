@@ -211,6 +211,29 @@ describe('PATCH /products/:barcode/stock', () => {
     expect(res.json().error.code).toBe('INVALID_STOCK_VALUE');
     expect(sheets.updateRow).not.toHaveBeenCalled();
   });
+
+  it('rejects a stock adjustment rather than erasing a cost cell it only carries through', async () => {
+    // Stock itself is fine; the cost cell holds a Spanish-locale `2,5`, which
+    // parses to NaN. The stock route doesn't own cost, but writeStock still
+    // carries it through the row it writes.
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([
+      ['789', 'Pan', 'Marca Z', 'Panaderia', 'unidad', '2,5', '10', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/products/789/stock',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { delta: 5, requestId: 'req-00000003' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INVALID_SHEET_VALUE');
+    expect(sheets.updateRow).not.toHaveBeenCalled();
+  });
 });
 
 describe('PATCH /products/:barcode/stock idempotency', () => {
@@ -460,6 +483,29 @@ describe('PUT /products/:barcode', () => {
 
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe('PRODUCT_NOT_FOUND');
+  });
+
+  it('rejects an edit rather than erasing a stock cell it only carries through', async () => {
+    // The stock cell holds `10 unidades`, which parses to NaN. PUT doesn't
+    // own stock, but it still round-trips it through the write — without the
+    // shared guard, NaN serializes to null and the edit would erase it.
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id, 'INVENTARIO');
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'Marca X', 'Lacteos', 'unidad', '2.5', '10 unidades', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/products/123',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { name: 'Leche entera', brand: 'Marca X', department: 'Lacteos', unit: 'litro', costUsd: 3 },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INVALID_SHEET_VALUE');
+    expect(sheets.updateRow).not.toHaveBeenCalled();
   });
 
   it('serializes its read-modify-write with the queue, so a concurrent stock adjustment is not clobbered', async () => {

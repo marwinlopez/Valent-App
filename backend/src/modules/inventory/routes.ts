@@ -55,6 +55,39 @@ async function findProductRow(
   return parseRow(rows[index], index + 1);
 }
 
+// Matches the column order every write below builds, so a rejected write can
+// name the offending column instead of just an index.
+const ROW_COLUMNS = ['barcode', 'name', 'brand', 'department', 'unit', 'costUsd', 'stock', 'updatedAt', 'updatedBy'] as const;
+
+/**
+ * The single choke point every write to the Productos sheet goes through.
+ *
+ * PUT and PATCH .../stock both reconstruct the whole 9-column row, carrying
+ * forward columns they don't own (PUT carries `stock`, the stock route
+ * carries `costUsd`). Those carried-through values came from `parseRow`,
+ * which yields NaN for a cell Sheets can't parse — write that straight
+ * through and `JSON.stringify` turns it into `null`, erasing whatever was in
+ * that cell while the route still answers 200. One guard here, instead of a
+ * field-level check duplicated in every route that assembles a row.
+ */
+async function writeProductRow(
+  app: FastifyInstance,
+  spreadsheetId: string,
+  sheetRow: number,
+  barcode: string,
+  row: (string | number)[]
+): Promise<void> {
+  const badIndex = row.findIndex((v) => typeof v === 'number' && !Number.isFinite(v));
+  if (badIndex !== -1) {
+    throw new ApiError(
+      409,
+      'INVALID_SHEET_VALUE',
+      `Cannot write barcode ${barcode}: column "${ROW_COLUMNS[badIndex]}" is not a valid number in the sheet`
+    );
+  }
+  await app.deps.sheets.updateRow(spreadsheetId, `Productos!A${sheetRow}:I${sheetRow}`, row);
+}
+
 const createProductSchema = z.object({
   barcode: z.string().min(1),
   name: z.string().min(1),
@@ -171,7 +204,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
         throw new ApiError(404, 'PRODUCT_NOT_FOUND', `No product with barcode ${barcode}`);
       }
       const sheetRow = product.rowIndex + 1;
-      await app.deps.sheets.updateRow(spreadsheetId, `Productos!A${sheetRow}:I${sheetRow}`, [
+      await writeProductRow(app, spreadsheetId, sheetRow, barcode, [
         product.barcode,
         body.name,
         body.brand,
@@ -220,7 +253,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
       }
       const sheetRow = product.rowIndex + 1;
       const writeStock = (stock: number) =>
-        app.deps.sheets.updateRow(spreadsheetId, `Productos!A${sheetRow}:I${sheetRow}`, [
+        writeProductRow(app, spreadsheetId, sheetRow, barcode, [
           product.barcode,
           product.name,
           product.brand,
@@ -257,6 +290,24 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
         if (product.stock === prevStock && prevStock !== recordedStock) {
           await writeStock(recordedStock);
           return { ...product, stock: recordedStock };
+        }
+        if (product.stock !== recordedStock) {
+          // Neither branch of the assumption above held: the sheet's current
+          // stock matches neither prev_stock nor new_stock. That means a
+          // human edited the cell or another instance adjusted it since this
+          // ledger row was written — not proof the delta already landed.
+          // Dropping it is still the safe direction (never double-apply), but
+          // silently is wrong; log it so a dropped delta is findable.
+          app.log.warn(
+            {
+              barcode,
+              requestId,
+              prevStock,
+              recordedStock,
+              observedStock: product.stock,
+            },
+            'Stock adjustment replay: sheet stock matches neither prev_stock nor new_stock; dropping the delta without writing'
+          );
         }
         return product;
       }

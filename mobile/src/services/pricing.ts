@@ -15,7 +15,7 @@ export type PriceResult =
  * should have denied.
  */
 export function calculatePriceVes(
-  costUsd: number,
+  costUsd: number | null,
   marginPct: number | null,
   bcvRate: number | null
 ): PriceResult {
@@ -25,7 +25,7 @@ export function calculatePriceVes(
   if (marginPct === null || !Number.isFinite(marginPct)) {
     return { ok: false, missing: 'margin' };
   }
-  if (!Number.isFinite(costUsd)) {
+  if (costUsd === null || !Number.isFinite(costUsd)) {
     return { ok: false, missing: 'cost' };
   }
   // A margin at or below -100% prices at or below zero. The margins endpoint
