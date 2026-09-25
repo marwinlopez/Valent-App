@@ -57,16 +57,16 @@ describe('inventory api', () => {
     });
   });
 
-  it('adjustStock patches a delta', async () => {
-    await adjustStock('123', -2);
+  it('adjustStock patches a delta with its idempotency key', async () => {
+    await adjustStock('123', -2, 'req-abcdefgh');
     expect(apiFetch).toHaveBeenCalledWith('/products/123/stock', {
       method: 'PATCH',
-      body: JSON.stringify({ delta: -2 }),
+      body: JSON.stringify({ delta: -2, requestId: 'req-abcdefgh' }),
     });
   });
 
   it('encodes a barcode that needs escaping in the path', async () => {
-    await adjustStock('a/b', 1);
+    await adjustStock('a/b', 1, 'req-abcdefgh');
     expect(apiFetch).toHaveBeenCalledWith('/products/a%2Fb/stock', expect.anything());
   });
 });

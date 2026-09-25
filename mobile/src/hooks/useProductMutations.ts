@@ -23,9 +23,12 @@ export function useProductMutations() {
     onSuccess: invalidate,
   });
 
+  /* `requestId` comes from the caller: it identifies one logical adjustment
+     and has to survive re-renders and retries of it, so it is minted once at
+     the call site (in the press handler) rather than here. */
   const adjust = useMutation({
-    mutationFn: ({ barcode, delta }: { barcode: string; delta: number }) =>
-      adjustStock(barcode, delta),
+    mutationFn: ({ barcode, delta, requestId }: { barcode: string; delta: number; requestId: string }) =>
+      adjustStock(barcode, delta, requestId),
     onSuccess: invalidate,
   });
 

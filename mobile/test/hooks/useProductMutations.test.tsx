@@ -58,10 +58,20 @@ describe('useProductMutations', () => {
     const { result } = await renderHook(() => useProductMutations(), { wrapper });
 
     await act(async () => {
-      await result.current.adjust.mutateAsync({ barcode: '1', delta: 5 });
+      await result.current.adjust.mutateAsync({ barcode: '1', delta: 5, requestId: 'req-abcdefgh' });
     });
 
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: PRODUCTS_QUERY_KEY }));
+  });
+
+  it('passes the caller-supplied requestId straight through to the API', async () => {
+    const { result } = await renderHook(() => useProductMutations(), { wrapper });
+
+    await act(async () => {
+      await result.current.adjust.mutateAsync({ barcode: '1', delta: 5, requestId: 'req-abcdefgh' });
+    });
+
+    expect(adjustStock).toHaveBeenCalledWith('1', 5, 'req-abcdefgh');
   });
 
   it('does not invalidate when the mutation fails', async () => {

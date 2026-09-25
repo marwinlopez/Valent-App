@@ -1,4 +1,4 @@
-import { filterProducts } from '../../src/hooks/useProductSearch';
+import { filterProducts, isKnownBarcode } from '../../src/services/productSearch';
 import type { Product } from '../../src/types/api';
 
 const products: Product[] = [
@@ -34,5 +34,19 @@ describe('filterProducts', () => {
 
   it('returns nothing when nothing matches', () => {
     expect(filterProducts(products, 'zzz')).toEqual([]);
+  });
+});
+
+describe('isKnownBarcode', () => {
+  it('is true for a code in the catalog, so the scan opens that product', () => {
+    expect(isKnownBarcode(products, '7591234567890')).toBe(true);
+  });
+
+  it('is false for a code that is not in the catalog, so the scan starts creation', () => {
+    expect(isKnownBarcode(products, '0000000000000')).toBe(false);
+  });
+
+  it('matches the whole code, not a substring of another product', () => {
+    expect(isKnownBarcode(products, '759123')).toBe(false);
   });
 });

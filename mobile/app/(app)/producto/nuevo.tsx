@@ -7,6 +7,7 @@ import { usePricingInputs } from '../../../src/hooks/usePricingInputs';
 import { calculatePriceVes } from '../../../src/services/pricing';
 import { Button } from '../../../src/components/ui/Button';
 import { TextInput } from '../../../src/components/ui/TextInput';
+import { Skeleton } from '../../../src/components/ui/Skeleton';
 import { useToast } from '../../../src/feedback/ToastProvider';
 import { ApiRequestError } from '../../../src/services/api/client';
 
@@ -14,7 +15,7 @@ export default function NuevoProducto() {
   // Pre-filled when arriving from a scan of a code that isn't in the catalog.
   const { barcode: scannedBarcode } = useLocalSearchParams<{ barcode?: string }>();
   const { create } = useProductMutations();
-  const { bcvRate, marginFor } = usePricingInputs();
+  const { bcvRate, marginFor, isLoading: pricingLoading, isError: pricingError } = usePricingInputs();
   const { showToast } = useToast();
 
   const [form, setForm] = useState({
@@ -27,6 +28,10 @@ export default function NuevoProducto() {
     stock: '',
   });
 
+  // `Number('')` is 0, so an untouched cost field would preview a real price
+  // for a product that has no cost yet. Nothing is previewed until a cost has
+  // actually been typed.
+  const costEntered = form.costUsd.trim() !== '';
   const costUsd = Number(form.costUsd);
   const preview = calculatePriceVes(costUsd, marginFor(form.department), bcvRate);
 
@@ -59,8 +64,16 @@ export default function NuevoProducto() {
     }
   };
 
+  // Cost and stock included: without them Create was enabled on empty fields
+  // and silently sent 0 for both.
   const complete =
-    form.barcode.trim() && form.name.trim() && form.brand.trim() && form.department.trim() && form.unit.trim();
+    form.barcode.trim() &&
+    form.name.trim() &&
+    form.brand.trim() &&
+    form.department.trim() &&
+    form.unit.trim() &&
+    costEntered &&
+    form.stock.trim();
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -74,7 +87,13 @@ export default function NuevoProducto() {
       <TextInput label="Costo USD" value={form.costUsd} keyboardType="decimal-pad" onChangeText={(v) => setForm({ ...form, costUsd: v })} />
       <TextInput label="Existencia inicial" value={form.stock} keyboardType="number-pad" onChangeText={(v) => setForm({ ...form, stock: v })} />
 
-      {preview.ok ? <Text variant="bodyMedium">Precio estimado: {preview.priceVes} Bs</Text> : null}
+      {!costEntered ? null : pricingLoading ? (
+        <Skeleton height={20} width="60%" />
+      ) : pricingError ? (
+        <Text variant="bodyMedium">No se pudo calcular el precio estimado. Revisa tu conexión.</Text>
+      ) : preview.ok ? (
+        <Text variant="bodyMedium">Precio estimado: {preview.priceVes} Bs</Text>
+      ) : null}
 
       <Button loading={create.isPending} disabled={create.isPending || !complete} onPress={submit}>
         Crear producto

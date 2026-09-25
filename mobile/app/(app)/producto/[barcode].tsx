@@ -9,6 +9,7 @@ import { calculatePriceVes } from '../../../src/services/pricing';
 import { Button } from '../../../src/components/ui/Button';
 import { TextInput } from '../../../src/components/ui/TextInput';
 import { EmptyState } from '../../../src/components/ui/EmptyState';
+import { Skeleton } from '../../../src/components/ui/Skeleton';
 import { useToast } from '../../../src/feedback/ToastProvider';
 import { ApiRequestError } from '../../../src/services/api/client';
 
@@ -23,13 +24,23 @@ const MISSING_INPUT_MESSAGE = {
 // zero" are different problems and deserve different toasts.
 const STOCK_MESSAGE_BY_CODE: Record<string, string> = {
   INSUFFICIENT_STOCK: 'No hay suficiente existencia para ese ajuste.',
+  INVALID_STOCK_VALUE: 'La existencia de este producto no es un número en la hoja. Corrígela allí primero.',
+  PRODUCT_NOT_FOUND: 'Ese producto ya no está en el inventario.',
 };
 const STOCK_FALLBACK_MESSAGE = 'No se pudo ajustar el stock.';
 
+const SAVE_MESSAGE_BY_CODE: Record<string, string> = {
+  // The stale-cache case this screen is likeliest to hit: the catalog was
+  // cached, another device deleted or renamed the row, and a generic "no se
+  // pudo guardar" would send the user hunting for a problem on their end.
+  PRODUCT_NOT_FOUND: 'Ese producto ya no está en el inventario. Vuelve a la lista para recargarla.',
+};
+const SAVE_FALLBACK_MESSAGE = 'No se pudo guardar el producto.';
+
 export default function ProductoDetalle() {
   const { barcode } = useLocalSearchParams<{ barcode: string }>();
-  const { data } = useProducts();
-  const { bcvRate, marginFor } = usePricingInputs();
+  const { data, isLoading, isError } = useProducts();
+  const { bcvRate, marginFor, isLoading: pricingLoading, isError: pricingError } = usePricingInputs();
   const { update, adjust } = useProductMutations();
   const { showToast } = useToast();
 
@@ -39,12 +50,44 @@ export default function ProductoDetalle() {
   const [form, setForm] = useState({ name: '', brand: '', department: '', unit: '', costUsd: '' });
   const [delta, setDelta] = useState('');
 
+  // `data` is undefined while the catalog is pending *and* when it failed, so
+  // all three have to be told apart before "no encontrado" can be stated as a
+  // fact about the inventory.
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <Skeleton height={32} />
+        <Skeleton height={20} width="60%" />
+        <Skeleton height={64} />
+      </View>
+    );
+  }
+
+  if (isError) {
+    return (
+      <View style={styles.errorContainer}>
+        <EmptyState
+          title="No se pudo cargar el producto"
+          message="Revisa tu conexión e inténtalo de nuevo."
+        />
+        <Button mode="text" onPress={() => router.back()}>
+          Volver
+        </Button>
+      </View>
+    );
+  }
+
   if (!product) {
     return (
-      <EmptyState
-        title="Producto no encontrado"
-        message="Puede que otro dispositivo lo haya modificado."
-      />
+      <View style={styles.errorContainer}>
+        <EmptyState
+          title="Producto no encontrado"
+          message="Puede que otro dispositivo lo haya modificado."
+        />
+        <Button mode="text" onPress={() => router.back()}>
+          Volver
+        </Button>
+      </View>
     );
   }
 
@@ -80,8 +123,9 @@ export default function ProductoDetalle() {
       });
       setEditing(false);
       showToast('Producto actualizado.');
-    } catch {
-      showToast('No se pudo guardar el producto.');
+    } catch (err) {
+      const code = err instanceof ApiRequestError ? err.code : null;
+      showToast((code && SAVE_MESSAGE_BY_CODE[code]) ?? SAVE_FALLBACK_MESSAGE);
     }
   };
 
@@ -92,7 +136,15 @@ export default function ProductoDetalle() {
       return;
     }
     try {
-      await adjust.mutateAsync({ barcode: product.barcode, delta: value });
+      // Minted here, in the press handler, so every retry of *this* adjustment
+      // carries the same key. A value derived during render would be a new one
+      // on each re-render, which is exactly what the backend's idempotency
+      // check exists to defeat.
+      await adjust.mutateAsync({
+        barcode: product.barcode,
+        delta: value,
+        requestId: globalThis.crypto.randomUUID(),
+      });
       setDelta('');
       showToast('Stock actualizado.');
     } catch (err) {
@@ -109,9 +161,21 @@ export default function ProductoDetalle() {
       <Divider />
 
       <Text variant="bodyMedium">Costo: {product.costUsd} USD</Text>
-      <Text variant="bodyMedium">
-        {price.ok ? `Precio: ${price.priceVes} Bs` : MISSING_INPUT_MESSAGE[price.missing]}
-      </Text>
+      {/* A rate or margin query still in flight is not a missing input, and a
+          failed /margins is not "this department has no margin" — either one
+          stated as a diagnosis sends someone to Configuración to fix a margin
+          that is already set. */}
+      {pricingLoading ? (
+        <Skeleton height={20} width="60%" />
+      ) : (
+        <Text variant="bodyMedium">
+          {pricingError
+            ? 'No se pudo calcular el precio. Revisa tu conexión.'
+            : price.ok
+              ? `Precio: ${price.priceVes} Bs`
+              : MISSING_INPUT_MESSAGE[price.missing]}
+        </Text>
+      )}
       <Text variant="bodyMedium">
         Existencia: {product.stock} {product.unit}
       </Text>
@@ -175,5 +239,6 @@ export default function ProductoDetalle() {
 
 const styles = StyleSheet.create({
   container: { padding: 16, gap: 12 },
+  errorContainer: { flex: 1, padding: 16, gap: 12 },
   section: { gap: 8 },
 });

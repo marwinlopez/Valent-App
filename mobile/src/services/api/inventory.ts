@@ -16,9 +16,18 @@ export async function updateProduct(barcode: string, body: UpdateProductRequest)
   });
 }
 
-export async function adjustStock(barcode: string, delta: number): Promise<Product> {
+/**
+ * `requestId` is the idempotency key for the adjustment. The backend's Sheets
+ * queue retries a whole task on a 429/5xx, and a stock adjustment accumulates,
+ * so without it a retry of a write that landed would apply the delta twice.
+ *
+ * It is a parameter, not generated here: it has to identify one logical
+ * adjustment across every retry of it, and a value minted inside this function
+ * would be new on each attempt — exactly what it is meant to prevent.
+ */
+export async function adjustStock(barcode: string, delta: number, requestId: string): Promise<Product> {
   return apiFetch<Product>(`/products/${encodeURIComponent(barcode)}/stock`, {
     method: 'PATCH',
-    body: JSON.stringify({ delta }),
+    body: JSON.stringify({ delta, requestId }),
   });
 }

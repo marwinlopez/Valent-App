@@ -3,7 +3,7 @@ import { View, FlatList, StyleSheet } from 'react-native';
 import { router } from 'expo-router';
 import { Searchbar, Text, FAB, List } from 'react-native-paper';
 import { useProducts } from '../../src/hooks/useProducts';
-import { filterProducts } from '../../src/hooks/useProductSearch';
+import { filterProducts } from '../../src/services/productSearch';
 import { Skeleton } from '../../src/components/ui/Skeleton';
 import { EmptyState } from '../../src/components/ui/EmptyState';
 import { Button } from '../../src/components/ui/Button';
@@ -41,10 +41,15 @@ export default function Inventario() {
       </Button>
 
       {products.length === 0 ? (
+        /* `query.trim()`, matching what filterProducts actually searched on:
+           a whitespace-only query filters nothing, so an empty catalog would
+           otherwise report "Sin resultados" for a search that never ran. */
         <EmptyState
-          title={query ? 'Sin resultados' : 'Inventario vacío'}
+          title={query.trim() ? 'Sin resultados' : 'Inventario vacío'}
           message={
-            query ? 'Ningún producto coincide con la búsqueda.' : 'Agrega tu primer producto con el botón +.'
+            query.trim()
+              ? 'Ningún producto coincide con la búsqueda.'
+              : 'Agrega tu primer producto con el botón +.'
           }
         />
       ) : (
