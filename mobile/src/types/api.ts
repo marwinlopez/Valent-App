@@ -14,3 +14,22 @@ export interface ApiErrorBody {
     message: string;
   };
 }
+
+export interface LinkDeviceRequest {
+  inviteToken: string;
+  hardwareId: string;
+  deviceName: string;
+}
+
+/** Note: the backend returns neither `deviceId` nor `status` here. */
+export interface LinkDeviceResponse {
+  jwt: string;
+  role: DeviceRole;
+  accountId: string;
+}
+
+export interface CreateInviteResponse {
+  inviteToken: string;
+  role: DeviceRole;
+  expiresAt: string;
+}

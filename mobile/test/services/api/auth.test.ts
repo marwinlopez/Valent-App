@@ -3,7 +3,7 @@ jest.mock('../../../src/services/api/client', () => ({
 }));
 
 import { apiFetch } from '../../../src/services/api/client';
-import { getAuthMe, readDeviceIdFromJwt } from '../../../src/services/api/auth';
+import { getAuthMe, readDeviceIdFromJwt, linkDevice, createInvite } from '../../../src/services/api/auth';
 
 function makeJwt(payload: unknown): string {
   const encode = (value: string) =>
@@ -25,6 +25,38 @@ describe('getAuthMe', () => {
       accountId: 'a1',
     });
     expect(apiFetch).toHaveBeenCalledWith('/auth/me');
+  });
+});
+
+describe('linkDevice', () => {
+  beforeEach(() => {
+    (apiFetch as jest.Mock).mockReset();
+  });
+
+  it('linkDevice posts the invite token, hardware id and device name', async () => {
+    (apiFetch as jest.Mock).mockResolvedValue({ jwt: 'j', role: 'ADMIN', accountId: 'a1' });
+
+    await linkDevice({ inviteToken: 'token', hardwareId: 'hw', deviceName: 'Caja 1' });
+
+    expect(apiFetch).toHaveBeenCalledWith('/auth/link-device', {
+      method: 'POST',
+      body: JSON.stringify({ inviteToken: 'token', hardwareId: 'hw', deviceName: 'Caja 1' }),
+    });
+  });
+
+  it('createInvite posts the chosen role', async () => {
+    (apiFetch as jest.Mock).mockResolvedValue({
+      inviteToken: 't',
+      role: 'INVENTARIO',
+      expiresAt: '2026-09-21T00:00:00.000Z',
+    });
+
+    await createInvite('INVENTARIO');
+
+    expect(apiFetch).toHaveBeenCalledWith('/devices/invite', {
+      method: 'POST',
+      body: JSON.stringify({ role: 'INVENTARIO' }),
+    });
   });
 });
 

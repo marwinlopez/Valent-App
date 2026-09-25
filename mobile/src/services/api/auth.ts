@@ -1,5 +1,5 @@
 import { apiFetch } from './client';
-import type { AuthMeResponse } from '../../types/api';
+import type { AuthMeResponse, LinkDeviceRequest, LinkDeviceResponse, CreateInviteResponse, DeviceRole } from '../../types/api';
 
 /**
  * `GET /auth/me` — the device's current `role`/`status`, plus a freshly minted
@@ -12,6 +12,26 @@ import type { AuthMeResponse } from '../../types/api';
  */
 export async function getAuthMe(): Promise<AuthMeResponse> {
   return apiFetch<AuthMeResponse>('/auth/me');
+}
+
+/**
+ * Consumes an invite token to link this device. The response carries neither
+ * `deviceId` nor `status`: `deviceId` is read from the JWT via
+ * `readDeviceIdFromJwt`, and `status` is always `'ACTIVE'` on this success path.
+ * The role is never chosen by the client — it comes from the invite token.
+ */
+export async function linkDevice(body: LinkDeviceRequest): Promise<LinkDeviceResponse> {
+  return apiFetch<LinkDeviceResponse>('/auth/link-device', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createInvite(role: DeviceRole): Promise<CreateInviteResponse> {
+  return apiFetch<CreateInviteResponse>('/devices/invite', {
+    method: 'POST',
+    body: JSON.stringify({ role }),
+  });
 }
 
 function base64UrlToString(segment: string): string {
