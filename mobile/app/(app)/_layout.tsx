@@ -4,7 +4,7 @@ import { useRevocationGuard } from '../../src/hooks/useRevocationGuard';
 import type { DeviceRole } from '../../src/types/api';
 
 const TABS_BY_ROLE: Record<DeviceRole, string[]> = {
-  ADMIN: ['dashboard', 'inventario', 'post-venta', 'configuracion'],
+  ADMIN: ['dashboard', 'inventario', 'post-venta', 'configuracion', 'invitar'],
   INVENTARIO: ['inventario'],
   POST_VENTA: ['post-venta'],
   CLIENTE_PEDIDOS: [],
@@ -45,6 +45,10 @@ export default function AppLayout() {
           href: visibleTabs.includes('configuracion') ? undefined : null,
           title: 'Configuración',
         }}
+      />
+      <Tabs.Screen
+        name="invitar"
+        options={{ href: visibleTabs.includes('invitar') ? undefined : null, title: 'Invitar' }}
       />
     </Tabs>
   );
