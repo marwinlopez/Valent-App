@@ -122,5 +122,6 @@ describe('useRevocationGuard', () => {
     await renderHook(() => useRevocationGuard());
 
     await waitFor(() => expect(useSessionStore.getState().session).toBeNull());
+    expect(signOut).toHaveBeenCalledWith('EXPIRED');
   });
 });

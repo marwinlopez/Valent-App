@@ -27,7 +27,9 @@ export async function signIn(session: Session): Promise<void> {
  */
 export async function signOut(reason?: SessionEndReason): Promise<void> {
   useSessionStore.getState().clearSession();
-  if (reason) {
+  // First reason wins: a revoked device's other in-flight queries all 401 and
+  // would otherwise overwrite the accurate banner with the generic "expiró".
+  if (reason && !useSessionStore.getState().endedReason) {
     useSessionStore.getState().setEndedReason(reason);
   }
   queryClient.clear();
