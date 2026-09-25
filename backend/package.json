@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "test": "vitest run",
-    "migrate": "tsx src/db/migrate.ts"
+    "migrate": "tsx src/db/migrate.ts",
+    "create-invite": "tsx scripts/create-invite.ts"
   },
   "dependencies": {
     "fastify": "^4.28.1",
