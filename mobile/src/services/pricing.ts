@@ -30,5 +30,8 @@ export function calculatePriceVes(
   }
 
   const raw = costUsd * (1 + marginPct / 100) * bcvRate;
+  if (!Number.isFinite(raw)) {
+    return { ok: false, missing: 'bcvRate' };
+  }
   return { ok: true, priceVes: Math.round(raw * 100) / 100 };
 }

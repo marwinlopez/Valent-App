@@ -33,3 +33,31 @@ export interface CreateInviteResponse {
   role: DeviceRole;
   expiresAt: string;
 }
+
+export interface Product {
+  barcode: string;
+  name: string;
+  brand: string;
+  department: string;
+  unit: string;
+  costUsd: number;
+  stock: number;
+}
+
+export type CreateProductRequest = Product;
+export type UpdateProductRequest = Omit<Product, 'barcode' | 'stock'>;
+
+export interface BcvRateResponse {
+  rateDate: string;
+  rate: number;
+}
+
+/** snake_case because that is what the backend actually returns here — its
+ *  response casing is inconsistent across endpoints and normalising it is
+ *  tracked as backend debt, not something this module papers over. */
+export interface MarginRule {
+  id: string;
+  level: 'CATEGORIA' | 'SUBCATEGORIA' | 'DEPARTAMENTO';
+  level_name: string;
+  percentage: number;
+}

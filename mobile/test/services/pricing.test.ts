@@ -28,4 +28,8 @@ describe('calculatePriceVes', () => {
   it('treats a non-finite cost as missing', () => {
     expect(calculatePriceVes(NaN, 10, 40)).toEqual({ ok: false, missing: 'cost' });
   });
+
+  it('reports a non-finite result (from a corrupted magnitude) as a missing rate rather than returning Infinity', () => {
+    expect(calculatePriceVes(1e308, 0, 10)).toEqual({ ok: false, missing: 'bcvRate' });
+  });
 });
