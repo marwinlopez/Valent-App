@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ApiError } from '../../plugins/errorHandler.js';
 import { evaluateCreditCheck } from '../customers/credit.js';
+import { findProductRows, writeProductRow } from '../inventory/products.js';
 
 const SALES_APPEND_RANGE = 'Ventas!A:I';
 
@@ -32,9 +33,49 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
     const spreadsheetId = accountRows[0].spreadsheet_id as string;
     const saleId = randomUUID();
 
-    const appendSale = () =>
-      app.deps.sheetsQueue.enqueue(req.auth!.accountId, () =>
-        app.deps.sheets.appendRow(spreadsheetId, SALES_APPEND_RANGE, [
+    const barcodes = body.items.map((item) => item.barcode);
+    if (new Set(barcodes).size !== barcodes.length) {
+      // `items` is a trust boundary. Decrementing one row twice in a single
+      // callback would compute the second write from stock the first already
+      // superseded, silently under-decrementing.
+      throw new ApiError(422, 'DUPLICATE_LINE', 'The same barcode appears more than once in this sale');
+    }
+
+    const recordSale = () =>
+      app.deps.sheetsQueue.enqueue(req.auth!.accountId, async () => {
+        // One read for the whole sale, inside the queue: a read outside it
+        // could be superseded by another task's write before these writes land.
+        const products = await findProductRows(app, spreadsheetId, barcodes);
+
+        // Validate every line before writing anything, so a short line at the
+        // end can't leave the earlier lines already decremented.
+        for (const item of body.items) {
+          const product = products.get(item.barcode);
+          if (!product) {
+            throw new ApiError(404, 'PRODUCT_NOT_FOUND', `No product with barcode ${item.barcode}`);
+          }
+          if (!Number.isFinite(product.stock)) {
+            throw new ApiError(
+              409,
+              'INVALID_STOCK_VALUE',
+              `Cannot sell barcode ${item.barcode}: its stock cell is not a number`
+            );
+          }
+          if (product.stock < item.quantity) {
+            throw new ApiError(
+              409,
+              'INSUFFICIENT_STOCK',
+              `Not enough stock for barcode ${item.barcode}: ${product.stock} available, ${item.quantity} requested`
+            );
+          }
+        }
+
+        // The sale row goes first on purpose. If a write fails partway, this
+        // order leaves a recorded sale with stock not fully decremented —
+        // inventory reads high, which a physical count surfaces, and the money
+        // is on the books. The reverse would lose the revenue record and shrink
+        // inventory, which nothing surfaces.
+        await app.deps.sheets.appendRow(spreadsheetId, SALES_APPEND_RANGE, [
           saleId,
           new Date().toISOString(),
           req.auth!.deviceId,
@@ -44,8 +85,35 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
           body.totalVes,
           body.paymentMethod,
           body.bcvRateUsed,
-        ])
-      );
+        ]);
+
+        try {
+          for (const item of body.items) {
+            const product = products.get(item.barcode)!;
+            const sheetRow = product.rowIndex + 1;
+            await writeProductRow(app, spreadsheetId, sheetRow, product.barcode, [
+              product.barcode,
+              product.name,
+              product.brand,
+              product.department,
+              product.unit,
+              product.costUsd,
+              product.stock - item.quantity,
+              new Date().toISOString(),
+              req.auth!.deviceId,
+            ]);
+          }
+        } catch (err) {
+          // The sale row already landed. Throwing here would tell the operator
+          // the sale failed and invite a second charge — and `POST /sales` is
+          // not idempotent, so that is the worse outcome. It would also reach
+          // the credit path's compensation below, reversing the debt for a sale
+          // that IS on the books: exactly the silent under-billing that the
+          // existing ordering comment says to avoid. Stock reads high until
+          // someone counts, which is the discoverable side.
+          app.log.error({ err, saleId }, 'Sale recorded but stock was not fully decremented');
+        }
+      });
 
     if (body.paymentMethod === 'CREDITO') {
       if (!body.customerId) {
@@ -120,7 +188,7 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
       // wait on the network and on the account's whole SheetsQueue backlog,
       // instead of holding a connection (and a row lock) for that long.
       try {
-        await appendSale();
+        await recordSale();
       } catch (err) {
         // Compensate: a single UPDATE is its own transaction, so this either
         // fully reverses the optimistic increase or does nothing.
@@ -143,7 +211,7 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
       return { saleId };
     }
 
-    await appendSale();
+    await recordSale();
     return { saleId };
   });
 }

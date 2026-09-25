@@ -13,6 +13,7 @@ describe('POST /sales', () => {
     const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
     const { jwt } = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10', '', '']]);
 
     const res = await app.inject({
       method: 'POST',
@@ -96,9 +97,10 @@ describe('POST /sales', () => {
   });
 
   it('accepts a credit sale within the limit and increases the customer balance', async () => {
-    const { app } = await buildTestApp();
+    const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
     const { jwt } = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10', '', '']]);
     const { rows: levelRows } = await app.deps.pool.query(
       'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
       [account.id, 'Oro', 300, 30]
@@ -193,6 +195,7 @@ describe('POST /sales', () => {
     const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
     const { jwt } = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10', '', '']]);
     const { rows: levelRows } = await app.deps.pool.query(
       'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
       [account.id, 'Oro', 300, 30]
@@ -254,6 +257,7 @@ describe('POST /sales', () => {
     const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
     const { jwt } = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10', '', '']]);
     const { rows: levelRows } = await app.deps.pool.query(
       'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
       [account.id, 'Oro', 300, 30]
@@ -352,5 +356,168 @@ describe('POST /sales', () => {
       customerRows[0].id,
     ]);
     expect(Number(rows[0].current_debt_balance)).toBe(90);
+  });
+});
+
+describe('POST /sales stock decrement', () => {
+  it('decrements every line and appends the sale in one queue pass', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10', '', ''],
+      ['456', 'Arroz', 'Y', 'Granos', 'kg', '1.2', '50', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [
+          { barcode: '123', name: 'Leche', quantity: 2, unitPriceUsd: 3 },
+          { barcode: '456', name: 'Arroz', quantity: 1, unitPriceUsd: 1.5 },
+        ],
+        totalUsd: 7.5,
+        totalVes: 300,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(sheets.appendRow).toHaveBeenCalledTimes(1);
+    expect(sheets.updateRow).toHaveBeenCalledTimes(2);
+
+    const written = sheets.updateRow.mock.calls.map(([, range, row]) => [range, row[0], row[6]]);
+    expect(written).toEqual(
+      expect.arrayContaining([
+        ['Productos!A2:I2', '123', 8],
+        ['Productos!A3:I3', '456', 49],
+      ])
+    );
+  });
+
+  it('rejects the whole sale when one line is short, writing nothing', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10', '', ''],
+      ['456', 'Arroz', 'Y', 'Granos', 'kg', '1.2', '1', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [
+          { barcode: '123', name: 'Leche', quantity: 2, unitPriceUsd: 3 },
+          { barcode: '456', name: 'Arroz', quantity: 5, unitPriceUsd: 1.5 },
+        ],
+        totalUsd: 13.5,
+        totalVes: 540,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INSUFFICIENT_STOCK');
+    expect(res.json().error.message).toContain('456');
+    expect(sheets.appendRow).not.toHaveBeenCalled();
+    expect(sheets.updateRow).not.toHaveBeenCalled();
+  });
+
+  it('rejects a sale naming a product that is not in the catalog', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    sheets.getValues.mockResolvedValue([]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '999', name: 'Fantasma', quantity: 1, unitPriceUsd: 1 }],
+        totalUsd: 1,
+        totalVes: 40,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('PRODUCT_NOT_FOUND');
+    expect(sheets.appendRow).not.toHaveBeenCalled();
+  });
+
+  it('keeps a credit sale and its debt when a stock write fails afterwards', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    const { rows: levelRows } = await app.deps.pool.query(
+      'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
+      [account.id, 'Plata', 100, 15]
+    );
+    const { rows: customerRows } = await app.deps.pool.query(
+      'INSERT INTO customers (account_id, name, loyalty_level_id, current_debt_balance) VALUES ($1, $2, $3, $4) RETURNING id',
+      [account.id, 'Cliente Credito', levelRows[0].id, 0]
+    );
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10', '', ''],
+    ]);
+    sheets.updateRow.mockRejectedValue(new Error('sheets is down'));
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        customerId: customerRows[0].id,
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 3 }],
+        totalUsd: 3,
+        totalVes: 120,
+        paymentMethod: 'CREDITO',
+        bcvRateUsed: 40,
+      },
+    });
+
+    // The sale row landed, so the sale stands and the debt must not be
+    // compensated away — that would be under-billing a recorded sale.
+    expect(res.statusCode).toBe(200);
+    expect(sheets.appendRow).toHaveBeenCalledTimes(1);
+    const { rows } = await app.deps.pool.query(
+      'SELECT current_debt_balance FROM customers WHERE id = $1',
+      [customerRows[0].id]
+    );
+    expect(Number(rows[0].current_debt_balance)).toBe(3);
+  });
+
+  it('rejects the same barcode appearing twice in one sale', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [
+          { barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 3 },
+          { barcode: '123', name: 'Leche', quantity: 2, unitPriceUsd: 3 },
+        ],
+        totalUsd: 9,
+        totalVes: 360,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe('DUPLICATE_LINE');
   });
 });
