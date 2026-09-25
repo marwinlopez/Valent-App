@@ -8,7 +8,7 @@ jest.mock('../../src/services/api/inventory', () => ({
   adjustStock: jest.fn(),
 }));
 
-import { createProduct, adjustStock } from '../../src/services/api/inventory';
+import { createProduct, updateProduct, adjustStock } from '../../src/services/api/inventory';
 import { useProductMutations } from '../../src/hooks/useProductMutations';
 import { PRODUCTS_QUERY_KEY } from '../../src/hooks/useProducts';
 
@@ -22,6 +22,7 @@ describe('useProductMutations', () => {
   beforeEach(() => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     (createProduct as jest.Mock).mockReset().mockResolvedValue({});
+    (updateProduct as jest.Mock).mockReset().mockResolvedValue({});
     (adjustStock as jest.Mock).mockReset().mockResolvedValue({});
   });
 
@@ -32,6 +33,20 @@ describe('useProductMutations', () => {
     await act(async () => {
       await result.current.create.mutateAsync({
         barcode: '1', name: 'A', brand: 'B', department: 'C', unit: 'u', costUsd: 1, stock: 0,
+      });
+    });
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: PRODUCTS_QUERY_KEY }));
+  });
+
+  it('invalidates the catalog after a successful update', async () => {
+    const spy = jest.spyOn(queryClient, 'invalidateQueries');
+    const { result } = await renderHook(() => useProductMutations(), { wrapper });
+
+    await act(async () => {
+      await result.current.update.mutateAsync({
+        barcode: '1',
+        body: { name: 'A', brand: 'B', department: 'C', unit: 'u', costUsd: 1 },
       });
     });
 
