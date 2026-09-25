@@ -10,10 +10,14 @@ import { queryClient } from './queryClient';
  * outlives the running app.
  */
 export async function signIn(session: Session): Promise<void> {
+  // Disk first. If this throws, nothing was written to memory either, so the
+  // two can't disagree — the app stays cleanly signed out and the caller shows
+  // a retryable error, instead of being signed in in memory with nothing on
+  // disk (which looks fine until the next launch, when it silently unlinks).
+  await saveSession(session);
   useSessionStore.getState().setSession(session);
   // A fresh sign-in must not leave a stale "your device was revoked" banner up.
   useSessionStore.getState().setEndedReason(null);
-  await saveSession(session);
 }
 
 /**

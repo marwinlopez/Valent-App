@@ -3,6 +3,7 @@ import { View, StyleSheet } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Text, Banner } from 'react-native-paper';
 import { useDeviceLinking } from '../../src/hooks/useDeviceLinking';
+import { useSession } from '../../src/hooks/useSession';
 import { useSessionStore } from '../../src/state/sessionStore';
 import { Button } from '../../src/components/ui/Button';
 import { TextInput } from '../../src/components/ui/TextInput';
@@ -15,6 +16,7 @@ const ENDED_REASON_MESSAGE = {
 
 export default function Home() {
   const { state, error, suggestedName, startManual, submitToken, confirmName, reset } = useDeviceLinking();
+  const session = useSession();
   const endedReason = useSessionStore((store) => store.endedReason);
   const [tokenInput, setTokenInput] = useState('');
   const [nameInput, setNameInput] = useState(suggestedName);
@@ -27,6 +29,18 @@ export default function Home() {
       router.setParams({ token: undefined });
     }
   }, [scannedToken, submitToken]);
+
+  if (session?.status === 'ACTIVE' && session.role === 'CLIENTE_PEDIDOS') {
+    return (
+      <View style={styles.container}>
+        <Text variant="headlineSmall">Dispositivo vinculado</Text>
+        <Text variant="bodyMedium">
+          Este dispositivo está vinculado como cliente. El catálogo de pedidos aún no está
+          disponible en esta versión.
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>

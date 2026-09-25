@@ -4,6 +4,14 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(),
 }));
 
+jest.mock('../../src/services/storage/secureSession', () => {
+  const actual = jest.requireActual('../../src/services/storage/secureSession');
+  return {
+    ...actual,
+    saveSession: jest.fn(actual.saveSession),
+  };
+});
+
 import * as SecureStore from 'expo-secure-store';
 import { signIn, signOut } from '../../src/services/session';
 import { useSessionStore, type Session } from '../../src/state/sessionStore';
@@ -20,6 +28,7 @@ const session: Session = {
 describe('session service', () => {
   beforeEach(() => {
     useSessionStore.getState().clearSession();
+    useSessionStore.getState().setEndedReason(null);
     queryClient.clear();
     (SecureStore.setItemAsync as jest.Mock).mockReset().mockResolvedValue(undefined);
     (SecureStore.deleteItemAsync as jest.Mock).mockReset().mockResolvedValue(undefined);
@@ -72,5 +81,21 @@ describe('session service', () => {
     await signOut('EXPIRED');
     await signIn({ deviceId: 'd1', accountId: 'a1', role: 'ADMIN', status: 'ACTIVE', jwt: 'j' });
     expect(useSessionStore.getState().endedReason).toBeNull();
+  });
+
+  it('keeps the first end reason when a second signOut follows', async () => {
+    await signOut('REVOKED');
+    await signOut('EXPIRED');
+    expect(useSessionStore.getState().endedReason).toBe('REVOKED');
+  });
+
+  it('does not put a session in memory when writing it to disk fails', async () => {
+    const { saveSession } = jest.requireMock('../../src/services/storage/secureSession');
+    (saveSession as jest.Mock).mockRejectedValueOnce(new Error('keychain locked'));
+
+    await expect(
+      signIn({ deviceId: 'd1', accountId: 'a1', role: 'ADMIN', status: 'ACTIVE', jwt: 'j' })
+    ).rejects.toThrow('keychain locked');
+    expect(useSessionStore.getState().session).toBeNull();
   });
 });
