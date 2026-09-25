@@ -430,6 +430,63 @@ describe('POST /sales stock decrement', () => {
     expect(sheets.updateRow).not.toHaveBeenCalled();
   });
 
+  it('rejects a sale whose stock cell is not a number, writing nothing', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10 unidades', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 3 }],
+        totalUsd: 3,
+        totalVes: 120,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INVALID_STOCK_VALUE');
+    expect(sheets.appendRow).not.toHaveBeenCalled();
+    expect(sheets.updateRow).not.toHaveBeenCalled();
+  });
+
+  it('rejects a sale whose cost cell is not a number, before the sale row is written', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    // A blank cost cell: parseRow's `num()` yields NaN for it, exactly like a
+    // Spanish-locale "2,5". writeProductRow would reject this too, but only
+    // after the sale row already landed -- this guard must fire before that.
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'X', 'Lacteos', 'unidad', '', '10', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 3 }],
+        totalUsd: 3,
+        totalVes: 120,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INVALID_SHEET_VALUE');
+    expect(sheets.appendRow).not.toHaveBeenCalled();
+    expect(sheets.updateRow).not.toHaveBeenCalled();
+  });
+
   it('rejects a sale naming a product that is not in the catalog', async () => {
     const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
@@ -489,6 +546,11 @@ describe('POST /sales stock decrement', () => {
     // compensated away — that would be under-billing a recorded sale.
     expect(res.statusCode).toBe(200);
     expect(sheets.appendRow).toHaveBeenCalledTimes(1);
+    // Non-vacuous: without this, a missing decrement (updateRow never even
+    // called) would pass this test exactly as well as the intended "decrement
+    // was attempted but rejected" case, since mockRejectedValue only matters
+    // if something invokes it.
+    expect(sheets.updateRow).toHaveBeenCalledTimes(1);
     const { rows } = await app.deps.pool.query(
       'SELECT current_debt_balance FROM customers WHERE id = $1',
       [customerRows[0].id]

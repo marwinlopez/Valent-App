@@ -61,6 +61,18 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
               `Cannot sell barcode ${item.barcode}: its stock cell is not a number`
             );
           }
+          // writeProductRow rejects a non-finite costUsd too (it carries the
+          // whole row forward, costUsd included). Checked here, before the
+          // append, for the same reason as stock above: that guard must not
+          // be the thing that fires after the sale row has already landed,
+          // where the catch below can only log it.
+          if (!Number.isFinite(product.costUsd)) {
+            throw new ApiError(
+              409,
+              'INVALID_SHEET_VALUE',
+              `Cannot sell barcode ${item.barcode}: its cost cell is not a number`
+            );
+          }
           if (product.stock < item.quantity) {
             throw new ApiError(
               409,
