@@ -67,6 +67,11 @@ const createProductSchema = z.object({
 
 const stockAdjustSchema = z.object({
   delta: z.number(),
+  /* Idempotency key, one per logical adjustment (see stock_adjustments).
+     Required, not optional: an optional key would be silently absent exactly
+     on the client paths that forgot to send it, which are the ones that
+     retry. */
+  requestId: z.string().min(8).max(64),
 });
 
 /* No `barcode`: it's the key used to find the row, so changing it would be a
@@ -186,13 +191,18 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
 
   app.patch('/products/:barcode/stock', { preHandler: app.requireRole(['ADMIN', 'INVENTARIO', 'POST_VENTA']) }, async (req) => {
     const { barcode } = req.params as { barcode: string };
-    const { delta } = stockAdjustSchema.parse(req.body);
+    const { delta, requestId } = stockAdjustSchema.parse(req.body);
     const { rows } = await app.deps.pool.query('SELECT spreadsheet_id FROM accounts WHERE id = $1', [
       req.auth!.accountId,
     ]);
     const spreadsheetId = rows[0].spreadsheet_id as string;
+    const accountId = req.auth!.accountId;
 
-    const updated = await app.deps.sheetsQueue.enqueue(req.auth!.accountId, async () => {
+    /* Everything below — the ledger lookup, the read, the decision and the
+       write — lives inside one enqueue callback. A lookup outside it and a
+       write inside would be the same split read-decide-write this codebase has
+       already been bitten by three times. */
+    const updated = await app.deps.sheetsQueue.enqueue(accountId, async () => {
       const product = await findProductRow(app, spreadsheetId, barcode);
       if (!product) {
         throw new ApiError(404, 'PRODUCT_NOT_FOUND', `No product with barcode ${barcode}`);
@@ -208,22 +218,64 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           `The stock cell for barcode ${barcode} is not a number; fix it in the sheet before adjusting`
         );
       }
+      const sheetRow = product.rowIndex + 1;
+      const writeStock = (stock: number) =>
+        app.deps.sheets.updateRow(spreadsheetId, `Productos!A${sheetRow}:I${sheetRow}`, [
+          product.barcode,
+          product.name,
+          product.brand,
+          product.department,
+          product.unit,
+          product.costUsd,
+          stock,
+          new Date().toISOString(),
+          req.auth!.deviceId,
+        ]);
+
+      const { rows: prior } = await app.deps.pool.query(
+        'SELECT barcode, prev_stock, new_stock FROM stock_adjustments WHERE account_id = $1 AND request_id = $2',
+        [accountId, requestId]
+      );
+      if (prior.length > 0) {
+        if (prior[0].barcode !== barcode) {
+          throw new ApiError(
+            409,
+            'REQUEST_ID_REUSED',
+            `requestId ${requestId} was already used for barcode ${prior[0].barcode}`
+          );
+        }
+        // NUMERIC comes back as a string from pg, as a number from pg-mem.
+        const prevStock = Number(prior[0].prev_stock);
+        const recordedStock = Number(prior[0].new_stock);
+        // The record is written before the sheet, so "recorded" does not mean
+        // "landed". If the sheet still holds the pre-adjustment value the write
+        // never went through (a 429 rejects the request outright) and is
+        // re-issued — as an absolute value, so repeating it is harmless.
+        // Anything else means the delta is already in, possibly with later
+        // adjustments stacked on top, so nothing is written and the row is
+        // returned as it currently reads.
+        if (product.stock === prevStock && prevStock !== recordedStock) {
+          await writeStock(recordedStock);
+          return { ...product, stock: recordedStock };
+        }
+        return product;
+      }
+
       const newStock = product.stock + delta;
       if (newStock < 0) {
         throw new ApiError(409, 'INSUFFICIENT_STOCK', 'Stock adjustment would go below zero');
       }
-      const sheetRow = product.rowIndex + 1;
-      await app.deps.sheets.updateRow(spreadsheetId, `Productos!A${sheetRow}:I${sheetRow}`, [
-        product.barcode,
-        product.name,
-        product.brand,
-        product.department,
-        product.unit,
-        product.costUsd,
-        newStock,
-        new Date().toISOString(),
-        req.auth!.deviceId,
-      ]);
+
+      // Recorded before the write, not after. The failure being guarded is a
+      // retry of a write that landed but whose response never came back: a
+      // record written afterwards would be missing in exactly that case, and
+      // the retry would add the delta a second time.
+      await app.deps.pool.query(
+        `INSERT INTO stock_adjustments (account_id, request_id, barcode, prev_stock, new_stock, device_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [accountId, requestId, barcode, product.stock, newStock, req.auth!.deviceId]
+      );
+      await writeStock(newStock);
       return { ...product, stock: newStock };
     });
 

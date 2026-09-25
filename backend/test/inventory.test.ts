@@ -182,7 +182,7 @@ describe('PATCH /products/:barcode/stock', () => {
       method: 'PATCH',
       url: '/products/789/stock',
       headers: { authorization: `Bearer ${jwt}` },
-      payload: { delta: -5 },
+      payload: { delta: -5, requestId: 'req-00000001' },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().stock).toBe(15);
@@ -204,12 +204,150 @@ describe('PATCH /products/:barcode/stock', () => {
       method: 'PATCH',
       url: '/products/789/stock',
       headers: { authorization: `Bearer ${jwt}` },
-      payload: { delta: 5 },
+      payload: { delta: 5, requestId: 'req-00000002' },
     });
 
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe('INVALID_STOCK_VALUE');
     expect(sheets.updateRow).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /products/:barcode/stock idempotency', () => {
+  /* A sheet that actually holds a value, so a double-applied delta shows up as
+     a wrong number rather than having to be inferred from call counts. */
+  function statefulSheet(sheets: any, initialStock: number) {
+    const state = { stock: initialStock };
+    sheets.getValues.mockImplementation(async () => [
+      ['789', 'Pan', 'Marca Z', 'Panaderia', 'unidad', '0.8', String(state.stock), '', ''],
+    ]);
+    sheets.updateRow.mockImplementation(async (_id: string, _range: string, row: unknown[]) => {
+      state.stock = row[6] as number;
+    });
+    return state;
+  }
+
+  function rateLimited(): Error {
+    const err = new Error('rate limited') as Error & { code: number };
+    err.code = 429;
+    return err;
+  }
+
+  async function patch(app: any, jwt: string, body: unknown) {
+    return app.inject({
+      method: 'PATCH',
+      url: '/products/789/stock',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: body,
+    });
+  }
+
+  it('does not double-apply when a queue retry follows a write that landed', async () => {
+    // The exact bug: SheetsQueue.withRetry re-runs the whole callback on a
+    // 429/5xx. If the write landed and only the response failed, the retry
+    // re-reads the already-updated stock, so re-deriving `stock + delta` would
+    // subtract a second time and still answer 200.
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    const state = statefulSheet(sheets, 20);
+
+    let attempts = 0;
+    sheets.updateRow.mockImplementation(async (_id: string, _range: string, row: unknown[]) => {
+      attempts += 1;
+      state.stock = row[6] as number; // the write itself lands
+      if (attempts === 1) throw rateLimited(); // ...but the response does not
+    });
+
+    const res = await patch(app, jwt, { delta: -5, requestId: 'req-retry-landed' });
+
+    expect(res.statusCode).toBe(200);
+    expect(state.stock).toBe(15);
+    expect(res.json().stock).toBe(15);
+  });
+
+  it('still applies the adjustment when the retried write never landed', async () => {
+    // The other half of the same ambiguity, and the reason the ledger row is
+    // written before the sheet rather than after: a 429 that rejected the
+    // write outright must not be mistaken for "already applied".
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    const state = statefulSheet(sheets, 20);
+
+    let attempts = 0;
+    sheets.updateRow.mockImplementation(async (_id: string, _range: string, row: unknown[]) => {
+      attempts += 1;
+      if (attempts === 1) throw rateLimited(); // rejected, nothing written
+      state.stock = row[6] as number;
+    });
+
+    const res = await patch(app, jwt, { delta: -5, requestId: 'req-retry-rejected' });
+
+    expect(res.statusCode).toBe(200);
+    expect(state.stock).toBe(15);
+    expect(res.json().stock).toBe(15);
+  });
+
+  it('ignores a replayed requestId sent as a second request', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    const state = statefulSheet(sheets, 20);
+
+    const first = await patch(app, jwt, { delta: -5, requestId: 'req-replayed' });
+    const second = await patch(app, jwt, { delta: -5, requestId: 'req-replayed' });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(state.stock).toBe(15);
+    expect(second.json().stock).toBe(15);
+  });
+
+  it('applies two adjustments that carry different requestIds', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    const state = statefulSheet(sheets, 20);
+
+    await patch(app, jwt, { delta: -5, requestId: 'req-first-one' });
+    const second = await patch(app, jwt, { delta: -5, requestId: 'req-second-one' });
+
+    expect(second.statusCode).toBe(200);
+    expect(state.stock).toBe(10);
+    expect(second.json().stock).toBe(10);
+  });
+
+  it('rejects a requestId replayed against a different barcode', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    statefulSheet(sheets, 20);
+
+    await patch(app, jwt, { delta: -5, requestId: 'req-crossed-over' });
+    sheets.getValues.mockResolvedValue([
+      ['999', 'Otro', 'Marca', 'Dept', 'unidad', '1', '20', '', ''],
+    ]);
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/products/999/stock',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { delta: -5, requestId: 'req-crossed-over' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('REQUEST_ID_REUSED');
+  });
+
+  it('requires a requestId', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    statefulSheet(sheets, 20);
+
+    const res = await patch(app, jwt, { delta: -5 });
+
+    expect(res.statusCode).toBe(422);
   });
 });
 
@@ -322,6 +460,48 @@ describe('PUT /products/:barcode', () => {
 
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe('PRODUCT_NOT_FOUND');
+  });
+
+  it('serializes its read-modify-write with the queue, so a concurrent stock adjustment is not clobbered', async () => {
+    // The PUT equivalent of the POST duplicate-check test above, and for the
+    // same reason: the row is read, modified and written back whole. If the
+    // read ran outside sheetsQueue.enqueue, a stock adjustment landing in
+    // between would be overwritten by the stale `product.stock` this route
+    // carries forward — a silent lost update, with both requests answering
+    // 200. Inside one callback, whichever task runs second reads the first
+    // one's result.
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id, 'INVENTARIO');
+
+    const state = { name: 'Leche', stock: 10 };
+    sheets.getValues.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return [['123', state.name, 'Marca X', 'Lacteos', 'unidad', '2.5', String(state.stock), '', '']];
+    });
+    sheets.updateRow.mockImplementation(async (_id: string, _range: string, row: unknown[]) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      state.name = row[1] as string;
+      state.stock = Number(row[6]);
+    });
+
+    const [put, patch] = await Promise.all([
+      app.inject({
+        method: 'PUT',
+        url: '/products/123',
+        headers: { authorization: `Bearer ${jwt}` },
+        payload: { name: 'Leche entera', brand: 'Marca X', department: 'Lacteos', unit: 'litro', costUsd: 2.5 },
+      }),
+      app.inject({
+        method: 'PATCH',
+        url: '/products/123/stock',
+        headers: { authorization: `Bearer ${jwt}` },
+        payload: { delta: -5, requestId: 'req-concurrent' },
+      }),
+    ]);
+
+    expect([put.statusCode, patch.statusCode]).toEqual([200, 200]);
+    expect(state).toEqual({ name: 'Leche entera', stock: 5 });
   });
 
   it('rejects a POST_VENTA device', async () => {

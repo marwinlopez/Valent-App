@@ -27,6 +27,7 @@ describe('runMigrations', () => {
         'invite_tokens',
         'loyalty_levels',
         'margin_rules',
+        'stock_adjustments',
       ].sort()
     );
   });
