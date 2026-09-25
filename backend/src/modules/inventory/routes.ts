@@ -82,7 +82,12 @@ const updateProductSchema = z.object({
 });
 
 export async function registerInventoryRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/products', { preHandler: app.requireAuth }, async (req) => {
+  /* Not `requireAuth`: the list branch turned this route from "one row if you
+     already know the code" into "the whole catalog, costUsd included".
+     CLIENTE_PEDIDOS is a role held by a customer's own device (sub-project 6),
+     which has no business reading cost prices. A customer-facing catalog needs
+     its own route returning derived prices without costs. */
+  app.get('/products', { preHandler: app.requireRole(['ADMIN', 'INVENTARIO', 'POST_VENTA']) }, async (req) => {
     const { barcode } = req.query as { barcode?: string };
     const { rows } = await app.deps.pool.query('SELECT spreadsheet_id FROM accounts WHERE id = $1', [
       req.auth!.accountId,

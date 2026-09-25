@@ -259,6 +259,20 @@ describe('GET /products (list)', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([]);
   });
+
+  it('rejects a CLIENTE_PEDIDOS device: the catalog carries cost prices', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id, 'CLIENTE_PEDIDOS');
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/products',
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
 });
 
 describe('PUT /products/:barcode', () => {
