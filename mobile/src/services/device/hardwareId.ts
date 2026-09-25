@@ -26,11 +26,15 @@ export async function getHardwareId(): Promise<string> {
   }
 
   if (Platform.OS === 'ios') {
-    // Returns null when the vendor id is briefly unavailable (e.g. before first
-    // unlock after a restart); a generated id keeps linking usable rather than
-    // failing outright, and a re-link later simply updates the same row.
+    // Null when the vendor id is briefly unavailable (e.g. before first unlock
+    // after a restart). Failing is the only safe answer: a generated id would
+    // be a new value on every launch, so the device would burn a device_limit
+    // slot per re-link and a REVOKED device could re-link under a fresh id.
     const vendorId = await Application.getIosIdForVendorAsync();
-    return vendorId ?? getGeneratedId();
+    if (!vendorId) {
+      throw new Error('El identificador del dispositivo no está disponible todavía.');
+    }
+    return vendorId;
   }
 
   return getGeneratedId();

@@ -28,12 +28,13 @@ describe('getHardwareId', () => {
     await expect(getHardwareId()).resolves.toBe('ios-vendor-456');
   });
 
-  it('falls back to a generated id on iOS when the vendor id is unavailable', async () => {
+  it('rejects on iOS when the vendor id is unavailable', async () => {
     Platform.OS = 'ios';
     (Application.getIosIdForVendorAsync as jest.Mock).mockResolvedValue(null);
 
-    const id = await getHardwareId();
-    expect(id).toMatch(/^web-/);
+    // No generated fallback: a fresh id per launch would let a REVOKED device
+    // re-link and would burn a device_limit slot on every re-link.
+    await expect(getHardwareId()).rejects.toThrow();
   });
 
   it('returns a stable generated id on web across calls', async () => {
