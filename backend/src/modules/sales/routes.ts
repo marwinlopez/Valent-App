@@ -3,9 +3,78 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ApiError } from '../../plugins/errorHandler.js';
 import { evaluateCreditCheck } from '../customers/credit.js';
-import { findProductRows, writeProductRow } from '../inventory/products.js';
+import { findProductRows, writeProductRow, type ProductRow } from '../inventory/products.js';
 
 const SALES_APPEND_RANGE = 'Ventas!A:I';
+
+interface AuditableItem {
+  barcode: string;
+  quantity: number;
+}
+
+/**
+ * Compares the client's total against what the backend would expect, and warns
+ * when they diverge.
+ *
+ * Deliberately ordinary float arithmetic, and deliberately NOT the app's
+ * `calculatePriceVes`: the client stays authoritative (what the customer was
+ * shown is what gets charged), so this only has to catch a meaningful
+ * divergence, not agree to the last unit. Reimplementing the app's integer
+ * pricing here would create a second source of truth that can drift silently.
+ *
+ * The tolerance scales with line count so accumulated per-line rounding
+ * doesn't raise false alarms.
+ */
+async function auditTotal(
+  app: FastifyInstance,
+  accountId: string,
+  saleId: string,
+  items: AuditableItem[],
+  products: Map<string, ProductRow>,
+  clientTotalVes: number
+): Promise<void> {
+  // Bound as a parameter, not `rate_date = CURRENT_DATE`, matching
+  // `bcv/routes.ts`: that route writes (and serves) today's rate using this
+  // same `new Date().toISOString().slice(0, 10)` expression evaluated on the
+  // API server's clock. Using `CURRENT_DATE` here would compare against the
+  // *database server's* timezone instead, which is not necessarily the row
+  // `GET /bcv-rate` served the mobile app -- the exact thing this audit is
+  // supposed to check against.
+  const today = new Date().toISOString().slice(0, 10);
+  const { rows: rateRows } = await app.deps.pool.query(
+    'SELECT rate FROM bcv_rates WHERE account_id = $1 AND rate_date = $2',
+    [accountId, today]
+  );
+  // No rate configured: the backend can't form an expectation. Warning on every
+  // sale in an unconfigured account is noise that trains people to ignore the
+  // real ones.
+  if (rateRows.length === 0) return;
+  const rate = Number(rateRows[0].rate);
+
+  const { rows: marginRows } = await app.deps.pool.query(
+    "SELECT level_name, percentage FROM margin_rules WHERE account_id = $1 AND level = 'DEPARTAMENTO'",
+    [accountId]
+  );
+  const marginByDepartment = new Map<string, number>(
+    marginRows.map((r) => [r.level_name as string, Number(r.percentage)])
+  );
+
+  let expected = 0;
+  for (const item of items) {
+    const product = products.get(item.barcode);
+    const margin = product ? marginByDepartment.get(product.department) : undefined;
+    if (!product || margin === undefined || !Number.isFinite(product.costUsd)) return;
+    expected += product.costUsd * (1 + margin / 100) * rate * item.quantity;
+  }
+
+  const tolerance = 0.01 * items.length;
+  if (Math.abs(expected - clientTotalVes) > tolerance) {
+    app.log.warn(
+      { saleId, clientTotalVes, expectedTotalVes: expected, tolerance },
+      'Sale total differs from the server-side estimate'
+    );
+  }
+}
 
 const saleItemSchema = z.object({
   barcode: z.string().min(1),
@@ -81,6 +150,8 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
             );
           }
         }
+
+        await auditTotal(app, req.auth!.accountId, saleId, body.items, products, body.totalVes).catch(() => undefined);
 
         // The sale row goes first on purpose. If a write fails partway, this
         // order leaves a recorded sale with stock not fully decremented —

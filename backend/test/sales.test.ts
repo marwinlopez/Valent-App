@@ -583,3 +583,87 @@ describe('POST /sales stock decrement', () => {
     expect(res.json().error.code).toBe('DUPLICATE_LINE');
   });
 });
+
+describe('POST /sales total audit', () => {
+  async function saleWith(totalVes: number) {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    const warn = vi.spyOn(app.log, 'warn');
+
+    // Bound as a literal, not the SQL `CURRENT_DATE` keyword: matches the
+    // production query in routes.ts, which compares against
+    // `new Date().toISOString().slice(0, 10)` (see the comment on `auditTotal`
+    // for why). This also sidesteps a pg-mem limitation -- its `CURRENT_DATE`
+    // is neither truncated to midnight nor memoized across statements, so a
+    // row inserted with it never matches a later `WHERE ... = CURRENT_DATE`.
+    const today = new Date().toISOString().slice(0, 10);
+    await app.deps.pool.query(
+      'INSERT INTO bcv_rates (account_id, rate_date, rate) VALUES ($1, $2, $3)',
+      [account.id, today, 40]
+    );
+    await app.deps.pool.query(
+      "INSERT INTO margin_rules (account_id, level, level_name, percentage) VALUES ($1, 'DEPARTAMENTO', $2, $3)",
+      [account.id, 'Lacteos', 50]
+    );
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2', '10', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '123', name: 'Leche', quantity: 2, unitPriceUsd: 3 }],
+        totalUsd: 6,
+        totalVes,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+    return { res, warn };
+  }
+
+  // 2 USD cost + 50% margin = 3 USD, x2 units, x40 = 240 Bs
+  it('stays quiet when the client total matches the server estimate', async () => {
+    const { res, warn } = await saleWith(240);
+    expect(res.statusCode).toBe(200);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns when the client total differs beyond the tolerance', async () => {
+    const { res, warn } = await saleWith(200);
+    expect(res.statusCode).toBe(200); // the client stays authoritative
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ clientTotalVes: 200, expectedTotalVes: 240 }),
+      expect.stringContaining('differs')
+    );
+  });
+
+  it('skips the audit when no rate is configured, rather than warning on every sale', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    const warn = vi.spyOn(app.log, 'warn');
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2', '10', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 3 }],
+        totalUsd: 3,
+        totalVes: 999,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
