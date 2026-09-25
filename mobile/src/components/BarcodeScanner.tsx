@@ -12,6 +12,9 @@ interface BarcodeScannerProps {
   prompt: string;
   /** Shown on web, where the camera isn't available. */
   webMessage: string;
+  /** Label for the permission-denied state's cancel button — the way out
+   *  differs by caller (manual code entry vs. searching the catalog). */
+  cancelLabel?: string;
   onScan: (data: string) => void;
   onCancel: () => void;
 }
@@ -20,6 +23,7 @@ export function BarcodeScanner({
   barcodeTypes,
   prompt,
   webMessage,
+  cancelLabel = 'Volver',
   onScan,
   onCancel,
 }: BarcodeScannerProps) {
@@ -47,7 +51,7 @@ export function BarcodeScanner({
           <Button onPress={() => Linking.openSettings()}>Abrir ajustes</Button>
         )}
         <Button mode="text" onPress={onCancel}>
-          Volver
+          {cancelLabel}
         </Button>
       </View>
     );

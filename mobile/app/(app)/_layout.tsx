@@ -50,6 +50,8 @@ export default function AppLayout() {
         name="invitar"
         options={{ href: visibleTabs.includes('invitar') ? undefined : null, title: 'Invitar' }}
       />
+      {/* Reached only via router.push from inventario.tsx — never a tab. */}
+      <Tabs.Screen name="escanear" options={{ href: null, title: 'Escanear' }} />
     </Tabs>
   );
 }
