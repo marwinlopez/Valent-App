@@ -23,7 +23,12 @@ export default function Invitar() {
 
       <SegmentedButtons
         value={role}
-        onValueChange={(value) => setRole(value as DeviceRole)}
+        onValueChange={(value) => {
+          setRole(value as DeviceRole);
+          // Without this the previous role's QR would sit under the new
+          // selection, and the admin would hand out the wrong role.
+          mutation.reset();
+        }}
         buttons={ROLE_OPTIONS}
       />
 
@@ -38,6 +43,7 @@ export default function Invitar() {
       {mutation.data ? (
         <View style={styles.result}>
           <QRCode value={mutation.data.inviteToken} size={220} />
+          <Text variant="bodyMedium">Rol: {mutation.data.role}</Text>
           <Text variant="bodySmall" selectable>
             {mutation.data.inviteToken}
           </Text>

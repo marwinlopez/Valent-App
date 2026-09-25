@@ -22,7 +22,7 @@ export default function Home() {
 
   useEffect(() => {
     if (scannedToken) {
-      void submitToken(scannedToken);
+      submitToken(scannedToken);
       // Clear the param so going back to Home later doesn't re-submit a stale token.
       router.setParams({ token: undefined });
     }
@@ -47,7 +47,7 @@ export default function Home() {
           <Button loading={state === 'submitting'} disabled={state === 'submitting' || nameInput.trim().length === 0} onPress={() => confirmName(nameInput)}>
             Vincular
           </Button>
-          <Button mode="text" onPress={reset}>
+          <Button mode="text" disabled={state === 'submitting'} onPress={reset}>
             Cancelar
           </Button>
         </>
