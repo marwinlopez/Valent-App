@@ -159,3 +159,116 @@ describe('PATCH /products/:barcode/stock', () => {
     expect(row[6]).toBe(15);
   });
 });
+
+describe('GET /products (list)', () => {
+  it('returns every product when no barcode is given', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'Marca X', 'Lacteos', 'unidad', '2.5', '10', '', ''],
+      ['456', 'Arroz', 'Marca Y', 'Granos', 'kg', '1.2', '50', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/products',
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toHaveLength(2);
+    expect(body[0]).toEqual({
+      barcode: '123',
+      name: 'Leche',
+      brand: 'Marca X',
+      department: 'Lacteos',
+      unit: 'unidad',
+      costUsd: 2.5,
+      stock: 10,
+    });
+    expect(body[0]).not.toHaveProperty('rowIndex');
+  });
+
+  it('returns an empty array for an empty catalog', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id);
+    sheets.getValues.mockResolvedValue([]);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/products',
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([]);
+  });
+});
+
+describe('PUT /products/:barcode', () => {
+  it('updates the editable fields and preserves stock', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id, 'INVENTARIO');
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'Marca X', 'Lacteos', 'unidad', '2.5', '10', '', ''],
+    ]);
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/products/123',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        name: 'Leche entera',
+        brand: 'Marca Z',
+        department: 'Lacteos',
+        unit: 'litro',
+        costUsd: 3,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ barcode: '123', name: 'Leche entera', costUsd: 3, stock: 10 });
+
+    const [, range, row] = sheets.updateRow.mock.calls[0];
+    expect(range).toBe('Productos!A2:I2');
+    expect(row[1]).toBe('Leche entera');
+    // stock comes from the sheet, never from the request body — PATCH stock owns it
+    expect(row[6]).toBe(10);
+  });
+
+  it('returns 404 for a barcode that does not exist', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id, 'INVENTARIO');
+    sheets.getValues.mockResolvedValue([]);
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/products/999',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { name: 'X', brand: 'Y', department: 'Z', unit: 'u', costUsd: 1 },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('PRODUCT_NOT_FOUND');
+  });
+
+  it('rejects a POST_VENTA device', async () => {
+    const { app } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const jwt = await jwtFor(app, account.id, 'POST_VENTA');
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/products/123',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: { name: 'X', brand: 'Y', department: 'Z', unit: 'u', costUsd: 1 },
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+});

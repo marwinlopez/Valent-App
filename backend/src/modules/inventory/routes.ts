@@ -54,16 +54,35 @@ const stockAdjustSchema = z.object({
   delta: z.number(),
 });
 
+/* No `barcode`: it's the key used to find the row, so changing it would be a
+   delete-and-create. No `stock`: PATCH /products/:barcode/stock owns that, and
+   accepting it here would let a stale edit form silently overwrite a stock
+   level another device just adjusted. */
+const updateProductSchema = z.object({
+  name: z.string().min(1),
+  brand: z.string().min(1),
+  department: z.string().min(1),
+  unit: z.string().min(1),
+  costUsd: z.number().nonnegative(),
+});
+
 export async function registerInventoryRoutes(app: FastifyInstance): Promise<void> {
   app.get('/products', { preHandler: app.requireAuth }, async (req) => {
     const { barcode } = req.query as { barcode?: string };
-    if (!barcode) {
-      throw new ApiError(422, 'MISSING_BARCODE', 'barcode query parameter is required');
-    }
     const { rows } = await app.deps.pool.query('SELECT spreadsheet_id FROM accounts WHERE id = $1', [
       req.auth!.accountId,
     ]);
     const spreadsheetId = rows[0].spreadsheet_id as string;
+
+    // No barcode means "the whole catalog". A read needs no queue — the queue
+    // serializes writes; concurrent reads can't corrupt anything.
+    if (!barcode) {
+      const raw = await app.deps.sheets.getValues(spreadsheetId, PRODUCTS_RANGE);
+      return raw.map((row, index) => {
+        const { rowIndex, ...rest } = parseRow(row, index + 1);
+        return rest;
+      });
+    }
 
     const product = await findProductRow(app, spreadsheetId, barcode);
     if (!product) {
@@ -108,6 +127,41 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     });
 
     return body;
+  });
+
+  app.put('/products/:barcode', { preHandler: app.requireRole(['ADMIN', 'INVENTARIO']) }, async (req) => {
+    const { barcode } = req.params as { barcode: string };
+    const body = updateProductSchema.parse(req.body);
+    const { rows } = await app.deps.pool.query('SELECT spreadsheet_id FROM accounts WHERE id = $1', [
+      req.auth!.accountId,
+    ]);
+    const spreadsheetId = rows[0].spreadsheet_id as string;
+
+    // Find-then-write must be one queued task: between a lookup outside the
+    // queue and the write inside it, another task could move the row and this
+    // update would land on the wrong product.
+    const updated = await app.deps.sheetsQueue.enqueue(req.auth!.accountId, async () => {
+      const product = await findProductRow(app, spreadsheetId, barcode);
+      if (!product) {
+        throw new ApiError(404, 'PRODUCT_NOT_FOUND', `No product with barcode ${barcode}`);
+      }
+      const sheetRow = product.rowIndex + 1;
+      await app.deps.sheets.updateRow(spreadsheetId, `Productos!A${sheetRow}:I${sheetRow}`, [
+        product.barcode,
+        body.name,
+        body.brand,
+        body.department,
+        body.unit,
+        body.costUsd,
+        product.stock,
+        new Date().toISOString(),
+        req.auth!.deviceId,
+      ]);
+      return { ...product, ...body };
+    });
+
+    const { rowIndex, ...rest } = updated;
+    return rest;
   });
 
   app.patch('/products/:barcode/stock', { preHandler: app.requireRole(['ADMIN', 'INVENTARIO', 'POST_VENTA']) }, async (req) => {
