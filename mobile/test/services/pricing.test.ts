@@ -35,6 +35,11 @@ describe('calculatePriceVes', () => {
     expect(calculatePriceVes(5, 10, rate)).toEqual({ ok: false, missing: 'bcvRate' });
   });
 
+  it('refuses a rate at or below zero instead of pricing the cart free', () => {
+    expect(calculatePriceVes(5, 10, 0)).toEqual({ ok: false, missing: 'bcvRate' });
+    expect(calculatePriceVes(5, 10, -40)).toEqual({ ok: false, missing: 'bcvRate' });
+  });
+
   it('treats a non-finite cost as missing', () => {
     expect(calculatePriceVes(NaN, 10, 40)).toEqual({ ok: false, missing: 'cost' });
   });

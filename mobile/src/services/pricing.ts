@@ -22,6 +22,13 @@ export function calculatePriceVes(
   if (bcvRate === null || !Number.isFinite(bcvRate)) {
     return { ok: false, missing: 'bcvRate' };
   }
+  // A rate at or below zero prices the whole cart at 0 Bs (or negative) while
+  // still reporting ok:true — free merchandise, not just a refused price. The
+  // column allows it and tenants are provisioned with raw SQL, same reasoning
+  // as the marginPct <= -100 guard below.
+  if (bcvRate <= 0) {
+    return { ok: false, missing: 'bcvRate' };
+  }
   if (marginPct === null || !Number.isFinite(marginPct)) {
     return { ok: false, missing: 'margin' };
   }

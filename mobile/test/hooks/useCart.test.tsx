@@ -37,6 +37,18 @@ describe('useCart', () => {
     expect(result.current.lines[0].quantity).toBe(2);
   });
 
+  it('refreshes the product on a repeat scan instead of keeping the stale one', async () => {
+    const { result } = await renderHook(() => useCart());
+    await act(async () => {
+      result.current.add(leche);
+    });
+    const revisedLeche: Product = { ...leche, costUsd: 2.5 };
+    await act(async () => {
+      result.current.add(revisedLeche);
+    });
+    expect(result.current.lines).toEqual([{ product: revisedLeche, quantity: 2 }]);
+  });
+
   it('keeps separate lines for different products', async () => {
     const { result } = await renderHook(() => useCart());
     await act(async () => {
@@ -57,6 +69,17 @@ describe('useCart', () => {
       result.current.setQuantity('123', 5);
     });
     expect(result.current.lines[0].quantity).toBe(5);
+  });
+
+  it.each([NaN, Infinity, 1.5])('leaves the line unchanged for a non-integer quantity (%p)', async (quantity) => {
+    const { result } = await renderHook(() => useCart());
+    await act(async () => {
+      result.current.add(leche);
+    });
+    await act(async () => {
+      result.current.setQuantity('123', quantity);
+    });
+    expect(result.current.lines).toEqual([{ product: leche, quantity: 1 }]);
   });
 
   it('removes the line when a quantity drops to zero or below', async () => {
