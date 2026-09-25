@@ -33,7 +33,13 @@
           "imageWidth": 76
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "La aplicación usa la cámara para escanear el código QR de vinculación."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

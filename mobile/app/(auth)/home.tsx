@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { Text, Banner } from 'react-native-paper';
 import { useDeviceLinking } from '../../src/hooks/useDeviceLinking';
 import { useSessionStore } from '../../src/state/sessionStore';
@@ -18,6 +18,15 @@ export default function Home() {
   const endedReason = useSessionStore((store) => store.endedReason);
   const [tokenInput, setTokenInput] = useState('');
   const [nameInput, setNameInput] = useState(suggestedName);
+  const { token: scannedToken } = useLocalSearchParams<{ token?: string }>();
+
+  useEffect(() => {
+    if (scannedToken) {
+      void submitToken(scannedToken);
+      // Clear the param so going back to Home later doesn't re-submit a stale token.
+      router.setParams({ token: undefined });
+    }
+  }, [scannedToken, submitToken]);
 
   return (
     <View style={styles.container}>
@@ -25,7 +34,7 @@ export default function Home() {
 
       <Text variant="headlineSmall">Vincular dispositivo</Text>
 
-      {state === 'error' && error ? (
+      {error ? (
         <Text variant="bodyMedium" style={styles.error}>
           {error}
         </Text>

@@ -46,7 +46,7 @@ export function useDeviceLinking() {
     const trimmed = candidate.trim();
     if (!UUID_PATTERN.test(trimmed)) {
       setError(INVALID_FORMAT_MESSAGE);
-      setState('error');
+      setState('manual');
       return;
     }
     setError(null);

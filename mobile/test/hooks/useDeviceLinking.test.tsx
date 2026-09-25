@@ -36,7 +36,7 @@ describe('useDeviceLinking', () => {
     });
 
     expect(linkDevice).not.toHaveBeenCalled();
-    expect(result.current.state).toBe('error');
+    expect(result.current.state).toBe('manual');
     expect(result.current.error).toMatch(/código/i);
   });
 
