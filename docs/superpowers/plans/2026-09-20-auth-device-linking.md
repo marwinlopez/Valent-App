@@ -671,7 +671,7 @@ git commit -m "feat(mobile): add hardware id service and linking dependencies"
 - Test: `mobile/test/hooks/useDeviceLinking.test.tsx`
 
 **Interfaces:**
-- Produces: `linkDevice(body: LinkDeviceRequest): Promise<LinkDeviceResponse>` and `createInvite(role: DeviceRole): Promise<CreateInviteResponse>` from `src/services/api/auth.ts`; `useDeviceLinking()` returning `{ state, error, suggestedName, startScan, submitToken, confirmName, reset }` from `src/hooks/useDeviceLinking.ts`. Tasks 5-7 consume these.
+- Produces: `linkDevice(body: LinkDeviceRequest): Promise<LinkDeviceResponse>` and `createInvite(role: DeviceRole): Promise<CreateInviteResponse>` from `src/services/api/auth.ts`; `useDeviceLinking()` returning `{ state, error, suggestedName, startManual, submitToken, confirmName, reset }` from `src/hooks/useDeviceLinking.ts`. Tasks 5-7 consume these.
 
 - [ ] **Step 1: Add the request/response types to `mobile/src/types/api.ts`**
 
@@ -859,7 +859,9 @@ import { getHardwareId, getSuggestedDeviceName } from '../services/device/hardwa
 import { signIn } from '../services/session';
 import { ApiRequestError } from '../services/api/client';
 
-export type LinkingState = 'idle' | 'scanning' | 'manual' | 'confirming' | 'submitting' | 'error';
+/* No 'scanning' state: the scanner is its own route, so nothing here would ever
+   set or read it. */
+export type LinkingState = 'idle' | 'manual' | 'confirming' | 'submitting' | 'error';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -881,11 +883,6 @@ export function useDeviceLinking() {
   const [state, setState] = useState<LinkingState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
-
-  const startScan = useCallback(() => {
-    setError(null);
-    setState('scanning');
-  }, []);
 
   const startManual = useCallback(() => {
     setError(null);
@@ -949,7 +946,6 @@ export function useDeviceLinking() {
     state,
     error,
     suggestedName: getSuggestedDeviceName(),
-    startScan,
     startManual,
     submitToken,
     confirmName,
