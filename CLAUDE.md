@@ -133,20 +133,36 @@ transacción de venta a crédito vs. escritura en Sheets.)
       **PENDIENTE DE VERIFICACIÓN EN VIVO** (igual que el sub-proyecto 2, no hay `backend/.env`):
       la migración `003_stock_adjustments.sql` nunca corrió contra Postgres real, y ni los 409 ni
       el registro de idempotencia ni el round trip `NUMERIC`→string se ejercitaron fuera de pg-mem.
-- [ ] Sub-proyecto 4: POS/PostVenta (checkout, métodos de pago, validación de crédito en vivo)
-      — nota: las ventas hoy no ajustan stock automáticamente; el cliente debe llamar
-      PATCH /products/:barcode/stock por separado, no atómico con la venta.
-      Reutiliza tres cosas del sub-proyecto 3; conviene saber esto antes de construir encima:
-      - `calculatePriceVes` ya usa aritmética entera (BigInt a escala 1e-4). Si el backend alguna
-        vez recalcula totales para contrastarlos con los que manda el cliente, tiene que usar la
-        misma escala y el mismo medio-arriba, o el 0,7% de las líneas no va a cuadrar.
-      - `PATCH /products/:barcode/stock` ahora exige un `requestId` y es idempotente ante los
-        reintentos de la cola. Pero un humano que vuelve a presionar tras un fallo visible genera
-        un `requestId` NUEVO, así que un doble toque después de una respuesta perdida sí duplica.
-        Es la semántica correcta para "un ajuste nuevo" — tenerlo presente al descontar por venta.
-      - El registro de idempotencia resuelve por heurística cuando la hoja no coincide ni con el
-        stock previo ni con el nuevo (hoy queda logueado, no silencioso). Y `prev_stock` es
-        `NUMERIC(14,4)`: un stock con más de 4 decimales nunca va a coincidir.
+- [x] Sub-proyecto 4: POS/PostVenta — hecho. Caja con búsqueda y escáner, carrito, los cinco
+      métodos de pago, chequeo de crédito en vivo, y `POST /sales` descontando stock **dentro
+      del mismo callback de la cola** que graba la venta. Agregó la auditoría server-side del
+      total y `backend/src/modules/inventory/products.ts` (los helpers de fila de producto,
+      extraídos para que ventas los reuse).
+      **PENDIENTE DE VERIFICACIÓN EN VIVO** (igual que los sub-proyectos 2 y 3, no hay
+      `backend/.env`). Lo que una sola corrida detectaría primero, en orden:
+      1. Que un escaneo real agregue **exactamente una** unidad. `BarcodeScanner` dispara
+         `onBarcodeScanned` en cada frame; el guard es un ref (no `useState`), pero eso nunca
+         corrió contra una cámara. Es lo único no verificado que puede sobrecobrar a un cliente.
+      2. `valueInputOption: 'USER_ENTERED'` contra una hoja en locale es-VE. Ahora **cada** venta
+         reescribe el `costUsd` de cada línea, así que si Sheets reinterpreta el número, corrompe
+         la columna de costo — y con ella todo precio futuro.
+      3. La forma real de la pestaña `Ventas`: se mandan 9 valores a `Ventas!A:I`.
+      4. `SELECT ... FOR UPDATE` sobre la fila del cliente. `backend/test/sales.test.ts` lo tiene
+         como `it.skip` porque pg-mem no implementa row locking: la garantía de concurrencia más
+         load-bearing de la ruta de crédito tiene cero cobertura ejecutada. Dos cajas, un cliente
+         a crédito, cobros simultáneos, contra una rama real de Neon.
+      Decisiones de dinero que conviene no reabrir sin leer esto:
+      - **USD es la fuente de verdad; los bolívares se derivan.** `totalVes = round2(totalUsd ×
+        tasa)`. Todo lo durable del sistema ya está en USD (el costo en la hoja, `credit_limit`,
+        `current_debt_balance`), y el bolívar es la presentación del día. Antes eran dos redondeos
+        independientes y los dos ledgers no cuadraban línea por línea.
+      - La tolerancia de la auditoría está **denominada en bolívares**: el cliente redondea el
+        precio unitario a centavos de dólar y después convierte, así que el residuo por unidad es
+        `0,005 × tasa`, no `0,005`. Sin ese factor, el 86% de las ventas correctas dispara una
+        advertencia falsa (medido sobre 200.000 carritos).
+      - El `appendRow` de la venta está **deliberadamente excluido** de los reintentos de
+        `SheetsQueue`: no se puede distinguir "grabó y después falló" de "nunca grabó", y
+        reintentar duplicaría la fila con el mismo `saleId`.
 - [ ] Sub-proyecto 5: Crédito y Fidelidad (UI en Configuración sobre los endpoints ya
       existentes en el backend)
 - [ ] Sub-proyecto 6: QR de cliente (generación con react-native-qrcode-svg, escaneo con
@@ -158,10 +174,22 @@ transacción de venta a crédito vs. escritura en Sheets.)
       despliega en más de una instancia, la revocación tarda hasta 30s en propagarse a las
       otras instancias. Necesita invalidación compartida (pub/sub o caché externo) antes de
       escalar horizontalmente.
-- [ ] Backend: la compensación de saldo cuando falla la escritura a Sheets en una venta a
-      crédito es best-effort (si el proceso muere entre el commit y la compensación, el
-      saldo del cliente queda sin la venta correspondiente en el ledger). Falta un job
-      periódico de reconciliación.
+- [ ] Backend: la compensación de saldo en una venta a crédito es best-effort (si el proceso
+      muere entre el commit y la compensación, el saldo del cliente queda sin la venta
+      correspondiente en el ledger). Falta un job periódico de reconciliación.
+      **El sub-proyecto 4 ensanchó esta ventana y la decisión fue aceptarla y documentarla.**
+      Antes solo entraba un fallo de infraestructura. Ahora que el descuento de stock vive en
+      el mismo callback, también entran los rechazos de negocio del día a día:
+      `INSUFFICIENT_STOCK` y `PRODUCT_NOT_FOUND` se lanzan *después* de que la deuda ya se
+      comprometió. La frecuencia con que se entra a la ventana pasó de "casi nunca" a "a
+      diario" — un error de tipeo del cajero ahora es un camino a un saldo incorrecto. Si la
+      compensación falla, el cliente queda debiendo por una venta que la caja le dijo que fue
+      rechazada, y el cajero va a corregir la cantidad y cobrar de nuevo: doble débito. El
+      job de reconciliación es el arreglo real; hasta entonces esto es riesgo aceptado.
+- [ ] Backend: `POST /sales` sigue sin registro de idempotencia. El `appendRow` ya no se
+      reintenta (ver sub-proyecto 4), lo que cierra el camino silencioso, pero un humano que
+      cobra de nuevo tras una respuesta perdida sí duplica la venta. El arreglo completo es un
+      ledger por `saleId` leído dentro del callback, igual que `stock_adjustments`.
 - [ ] Backend: aprovisionamiento de nuevas cuentas (tenants) sigue siendo un paso manual
       (insert SQL directo). Si se necesita alta de empresas por self-service, diseñar ese
       flujo como su propio sub-proyecto.
