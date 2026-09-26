@@ -5,6 +5,7 @@ import { Text } from 'react-native-paper';
 import { useProductMutations } from '../../../src/hooks/useProductMutations';
 import { usePricingInputs } from '../../../src/hooks/usePricingInputs';
 import { calculatePriceVes } from '../../../src/services/pricing';
+import { parseDecimal } from '../../../src/services/parseDecimal';
 import { Button } from '../../../src/components/ui/Button';
 import { TextInput } from '../../../src/components/ui/TextInput';
 import { Skeleton } from '../../../src/components/ui/Skeleton';
@@ -32,12 +33,14 @@ export default function NuevoProducto() {
   // for a product that has no cost yet. Nothing is previewed until a cost has
   // actually been typed.
   const costEntered = form.costUsd.trim() !== '';
-  const costUsd = Number(form.costUsd);
+  const costUsd = parseDecimal(form.costUsd);
+  // calculatePriceVes takes `number | null` and reports a null cost as
+  // missing, so an unparseable cost previews as "cost invalid", not as a price.
   const preview = calculatePriceVes(costUsd, marginFor(form.department), bcvRate);
 
   const submit = async () => {
-    const stock = Number(form.stock);
-    if (!Number.isFinite(costUsd) || costUsd < 0 || !Number.isFinite(stock) || stock < 0) {
+    const stock = parseDecimal(form.stock);
+    if (costUsd === null || costUsd < 0 || stock === null || stock < 0) {
       showToast('El costo y la existencia deben ser números válidos.');
       return;
     }

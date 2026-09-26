@@ -6,6 +6,7 @@ import { useProducts } from '../../../src/hooks/useProducts';
 import { usePricingInputs } from '../../../src/hooks/usePricingInputs';
 import { useProductMutations } from '../../../src/hooks/useProductMutations';
 import { calculatePriceVes } from '../../../src/services/pricing';
+import { parseDecimal } from '../../../src/services/parseDecimal';
 import { Button } from '../../../src/components/ui/Button';
 import { TextInput } from '../../../src/components/ui/TextInput';
 import { EmptyState } from '../../../src/components/ui/EmptyState';
@@ -105,8 +106,10 @@ export default function ProductoDetalle() {
   };
 
   const save = async () => {
-    const costUsd = Number(form.costUsd);
-    if (!Number.isFinite(costUsd) || costUsd < 0) {
+    const costUsd = parseDecimal(form.costUsd);
+    // `=== null` first so TypeScript narrows `number | null` to `number` for
+    // the mutation below — `Number.isFinite` is not a type guard.
+    if (costUsd === null || costUsd < 0) {
       showToast('El costo debe ser un número válido.');
       return;
     }
@@ -130,8 +133,8 @@ export default function ProductoDetalle() {
   };
 
   const applyDelta = async () => {
-    const value = Number(delta);
-    if (!Number.isFinite(value) || value === 0) {
+    const value = parseDecimal(delta);
+    if (value === null || value === 0) {
       showToast('Indica cuántas unidades entraron o salieron.');
       return;
     }
