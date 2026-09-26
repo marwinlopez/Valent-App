@@ -25,6 +25,8 @@ describe('BCV rate', () => {
     });
     expect(get.statusCode).toBe(200);
     expect(Number(get.json().rate)).toBe(42.5);
+    // A plain date, not a serialized Date: the Configuración screen shows it.
+    expect(get.json().rateDate).toBe('2026-09-19');
   });
 
   it('returns 404 when no rate exists for the date', async () => {

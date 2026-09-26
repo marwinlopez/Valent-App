@@ -12,14 +12,17 @@ export async function registerBcvRoutes(app: FastifyInstance): Promise<void> {
     const { date } = req.query as { date?: string };
     const rateDate = date ?? new Date().toISOString().slice(0, 10);
 
-    const { rows } = await app.deps.pool.query('SELECT rate, rate_date FROM bcv_rates WHERE account_id = $1 AND rate_date = $2', [
+    const { rows } = await app.deps.pool.query('SELECT rate FROM bcv_rates WHERE account_id = $1 AND rate_date = $2', [
       req.auth!.accountId,
       rateDate,
     ]);
     if (rows.length === 0) {
       throw new ApiError(404, 'RATE_NOT_FOUND', `No BCV rate set for ${rateDate}`);
     }
-    return { rateDate: rows[0].rate_date, rate: Number(rows[0].rate) };
+    // The queried date, not `rows[0].rate_date`: pg parses a DATE into a JS
+    // Date at the server's local midnight, which serializes as a timestamp —
+    // and as the previous day on a server east of UTC.
+    return { rateDate, rate: Number(rows[0].rate) };
   });
 
   app.put('/bcv-rate', { preHandler: app.requireRole(['ADMIN']) }, async (req) => {
