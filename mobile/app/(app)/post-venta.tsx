@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View, ScrollView, StyleSheet } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Text, Searchbar, List, Divider, SegmentedButtons, Menu } from 'react-native-paper';
@@ -47,6 +47,14 @@ export default function PostVenta() {
   const { data: customers } = useCustomers();
   const sale = useSale();
   const { showToast } = useToast();
+
+  // `sale.isPending` only flips after React commits a render following
+  // `mutateAsync`'s dispatch, so two taps close enough together both read it
+  // as `false`. This ref is written synchronously, before any `await`, so
+  // the second tap's `charge()` call sees the first one's write regardless of
+  // whether a render has happened yet — it's the actual guard; `isPending`
+  // stays on `disabled` for the visual state only.
+  const chargingRef = useRef(false);
 
   const [query, setQuery] = useState('');
   const [method, setMethod] = useState<PaymentMethod>('EFECTIVO_USD');
@@ -104,8 +112,13 @@ export default function PostVenta() {
   // False while the credit check is loading or errored too, not just when it
   // came back denied — `credit.data` is undefined in both of those cases, so
   // Charge stays disabled until a verdict actually exists. The messages below
-  // say which of those three states applies.
-  const creditBlocked = method === 'CREDITO' && (credit.data ? !credit.data.approved : true);
+  // say which of those three states applies. `credit.isError` is checked
+  // explicitly (not just folded into the `credit.data` ternary): the total is
+  // part of the query key, so a *stale* approved result for the current key
+  // can still be sitting in cache while the latest request for that same key
+  // just errored — the ternary alone would keep trusting the stale data.
+  const creditBlocked =
+    method === 'CREDITO' && (credit.isError || (credit.data ? !credit.data.approved : true));
   const canCharge =
     priced.ok &&
     lines.length > 0 &&
@@ -114,7 +127,8 @@ export default function PostVenta() {
     (method !== 'CREDITO' || Boolean(customerId));
 
   const charge = async () => {
-    if (!priced.ok || sale.isPending) return;
+    if (!priced.ok || chargingRef.current) return;
+    chargingRef.current = true;
     try {
       await sale.mutateAsync({
         customerId: customerId ?? undefined,
@@ -140,6 +154,12 @@ export default function PostVenta() {
       // Not an ApiRequestError: the request may or may not have landed, and
       // POST /sales is not idempotent, so we must not retry silently.
       showToast('No sabemos si la venta se registró. Verifícala antes de cobrar de nuevo.');
+    } finally {
+      // Reset even on failure/unknown-outcome: a locked button after a failed
+      // sale would be its own counter emergency. Whether the operator SHOULD
+      // charge again is a judgment call the toast above hands to them, not
+      // something this ref should decide by staying locked.
+      chargingRef.current = false;
     }
   };
 
