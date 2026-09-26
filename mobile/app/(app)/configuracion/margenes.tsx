@@ -96,7 +96,10 @@ export default function Margenes() {
     }
     try {
       await saveMargin.mutateAsync({ department, percentage });
-      setEditing(null);
+      // The mutation can resolve after the user has already moved on to
+      // editing a different department — only close the editor if it is
+      // still showing the one that was just saved.
+      setEditing((current) => (current === department ? null : current));
       showToast(`Margen de ${department} guardado.`);
     } catch (err) {
       const code = err instanceof ApiRequestError ? err.code : null;
