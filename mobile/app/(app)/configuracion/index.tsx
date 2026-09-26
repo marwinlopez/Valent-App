@@ -12,6 +12,12 @@ export default function Configuracion() {
         left={(props) => <List.Icon {...props} icon="currency-usd" />}
         onPress={() => router.push('/(app)/configuracion/tasa')}
       />
+      <List.Item
+        title="Márgenes"
+        description="El margen de cada departamento del inventario"
+        left={(props) => <List.Icon {...props} icon="percent" />}
+        onPress={() => router.push('/(app)/configuracion/margenes')}
+      />
     </ScrollView>
   );
 }
