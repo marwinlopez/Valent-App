@@ -45,12 +45,18 @@ interface AuditableItem {
  * pricing here would create a second source of truth that can drift silently.
  *
  * The tolerance scales with total quantity, not line count: the client rounds
- * a UNIT price to the nearest céntimo (max 0.005 Bs error) and then multiplies
- * by quantity, so the error accumulates once per unit sold, not once per
- * line. 0.01 per unit is double that per-unit bound; 0.02 per line adds a
- * little extra slack for the line-level rounding step and float summation
- * noise. A budget that scaled with line count instead (as this one used to)
- * warns on ordinary correct sales as soon as quantity > 1.
+ * a UNIT price to the nearest USD CENT (not Bs céntimo -- `priceCart` prices
+ * everything in USD and only converts the finished total, see cart.ts) and
+ * then multiplies by quantity, so the error accumulates once per unit sold,
+ * not once per line. That per-unit rounding error is up to 0.005 USD, which
+ * is worth up to `0.005 * rate` bolívars once converted -- the budget has to
+ * be denominated in the currency being compared (Bs), so the per-unit term
+ * is scaled by the day's rate. 0.01 * rate per unit is double that per-unit
+ * bound; 0.02 per line adds a little extra slack for the line-level rounding
+ * step and float summation noise. A budget that didn't scale with the rate
+ * (as this one used to) warns on the large majority of ordinary correct
+ * sales, because most of a bodega's catalog is sub-dollar and a USD cent is
+ * tens of bolívars wide.
  */
 async function auditTotal(
   app: FastifyInstance,
@@ -95,7 +101,7 @@ async function auditTotal(
   }
 
   const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
-  const tolerance = 0.01 * totalQuantity + 0.02 * items.length;
+  const tolerance = 0.01 * rate * totalQuantity + 0.02 * items.length;
   if (Math.abs(expected - clientTotalVes) > tolerance) {
     app.log.warn(
       { saleId, clientTotalVes, expectedTotalVes: expected, tolerance },
@@ -242,7 +248,15 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
           // caller (both just mean "no warning fired").
           app.log.warn({ err, saleId }, 'auditTotal failed and was skipped for this sale');
         });
-        auditInternalConsistency(app, saleId, body.items, body.totalUsd, body.totalVes, body.bcvRateUsed);
+        try {
+          auditInternalConsistency(app, saleId, body.items, body.totalUsd, body.totalVes, body.bcvRateUsed);
+        } catch (err) {
+          // Cannot throw today (no I/O, no external call), but the "must never
+          // reject a sale" guarantee this function exists to provide shouldn't
+          // rest on that staying true forever -- same reasoning as auditTotal's
+          // .catch just above.
+          app.log.warn({ err, saleId }, 'auditInternalConsistency failed and was skipped for this sale');
+        }
 
         // The sale row goes first on purpose. If a write fails partway, this
         // order leaves a recorded sale with stock not fully decremented —
@@ -274,6 +288,12 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
           // call in an ApiError guarantees it surfaces to the operator instead
           // of being silently replayed. The full fix is a saleId ledger
           // mirroring stock_adjustments (tracked as a backend follow-up).
+          //
+          // Logged before throwing: errorHandler.ts returns ApiError responses
+          // without logging them, so without this line there would be no
+          // server-side record at all of a possibly-orphaned Ventas row --
+          // nothing for anyone to reconcile against.
+          app.log.error({ err, saleId }, 'Sale append to Sheets failed; sale may or may not be recorded');
           throw new ApiError(
             502,
             'SALE_APPEND_FAILED',
@@ -283,9 +303,14 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
 
         const failedBarcodes: string[] = [];
         for (const item of body.items) {
-          const product = products.get(item.barcode)!;
-          const sheetRow = product.rowIndex + 1;
           try {
+            // Non-null: the validation loop above already 404s on any barcode
+            // missing from `products`. Moved inside the try (not guarded only
+            // by that non-null assertion) because an escaping error here is
+            // the same "reverses a real debt for a recorded sale" scenario the
+            // per-line try below exists to prevent.
+            const product = products.get(item.barcode)!;
+            const sheetRow = product.rowIndex + 1;
             // Retried on its own (not via sheetsQueue -- calling enqueue again
             // from inside an already-running task would just queue behind
             // itself, breaking the one-atomic-block rule). Safe to retry

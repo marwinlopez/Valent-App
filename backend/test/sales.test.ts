@@ -752,11 +752,65 @@ describe('POST /sales total audit', () => {
     );
   });
 
-  // Brackets the A2 tolerance boundary (0.01 * totalQuantity + 0.02 * lines)
-  // from both sides: 1 line, qty 1 -> tolerance 0.03. The old per-line-only
-  // formula (0.01 * items.length = 0.01) would warn on BOTH of these, since
-  // even the "inside" case's 0.02 Bs diff exceeds it -- which is exactly the
-  // false-alarm-on-an-ordinary-sale bug A2 fixes.
+  // Every other fixture in this file uses cost 2 @ 50% margin -- a USD unit
+  // price of exactly $3.00, an exact cent. That is why this suite stayed
+  // green under the broken (no-rate-factor) formula: no fixture exercised a
+  // cost/margin whose per-unit USD price is NOT an exact cent, which is the
+  // entire class of ordinary sale the old formula false-warned on. Cost 0.47
+  // at 5% margin prices at 0.4935 USD/unit, which `priceCart` rounds to 0.49
+  // -- a real, non-exact-cent residual. Values below computed with
+  // `node -e` against the real calculatePriceVes/priceCart integer-math
+  // logic (not guessed, not copied from a test run):
+  //   unitPriceUsd = 0.49, qty 3 -> totalUsd = 1.47, totalVes = 53.66 (rate 36.5)
+  //   backend's float expectation: 0.47 * 1.05 * 36.5 * 3 = 54.03825
+  //   diff = 0.37825 Bs; corrected tolerance = 0.01*36.5*3 + 0.02*1 = 1.115
+  it('does not warn on an ordinary correct sale whose unit price is not an exact USD cent', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    const warn = vi.spyOn(app.log, 'warn');
+    const today = new Date().toISOString().slice(0, 10);
+    await app.deps.pool.query('INSERT INTO bcv_rates (account_id, rate_date, rate) VALUES ($1, $2, $3)', [
+      account.id,
+      today,
+      36.5,
+    ]);
+    await app.deps.pool.query(
+      "INSERT INTO margin_rules (account_id, level, level_name, percentage) VALUES ($1, 'DEPARTAMENTO', $2, $3)",
+      [account.id, 'Lacteos', 5]
+    );
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '0.47', '10', '', '']]);
+    const queries = spyOnQueries(app);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '123', name: 'Leche', quantity: 3, unitPriceUsd: 0.49 }],
+        totalUsd: 1.47,
+        totalVes: 53.66,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 36.5,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(warn).not.toHaveBeenCalled();
+    expect(queries.some((q) => q.includes('FROM bcv_rates'))).toBe(true);
+    expect(queries.some((q) => q.includes('FROM margin_rules'))).toBe(true);
+  });
+
+  // Brackets the corrected tolerance boundary
+  // (0.01 * rate * totalQuantity + 0.02 * lines) from both sides: rate 40,
+  // qty 1, 1 line -> tolerance 0.42. The formula this replaces
+  // (0.01 * totalQuantity + 0.02 * lines, no rate factor) budgeted in the
+  // wrong currency -- it denominated a per-unit error that is actually
+  // "up to 0.005 USD" as if it were "up to 0.005 Bs", so its tolerance here
+  // would have been 0.03, and it would have warned on BOTH of these
+  // ordinary, correctly-priced sales (0.40 and 0.44 Bs diffs). That
+  // 18x-too-small budget is the false-alarm-on-an-ordinary-sale bug this
+  // fixes; see the corrected formula's comment on `auditTotal`.
   it('stays quiet just inside the tolerance boundary', async () => {
     const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
@@ -775,10 +829,10 @@ describe('POST /sales total audit', () => {
     sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2', '10', '', '']]);
     const queries = spyOnQueries(app);
 
-    // True server estimate: 2 * 1.5 * 40 = 120. Client total is 119.98, a
-    // 0.02 Bs diff, inside the 0.03 tolerance. totalUsd/unitPriceUsd are
+    // True server estimate: 2 * 1.5 * 40 = 120. Client total is 119.60, a
+    // 0.40 Bs diff, inside the 0.42 tolerance. totalUsd/unitPriceUsd are
     // totalVes/40 so A3's checks stay quiet too.
-    const totalVes = 119.98;
+    const totalVes = 119.6;
     const totalUsd = totalVes / 40;
     const res = await app.inject({
       method: 'POST',
@@ -817,8 +871,8 @@ describe('POST /sales total audit', () => {
     );
     sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2', '10', '', '']]);
 
-    // Same setup, but a 0.04 Bs diff -- just outside the 0.03 tolerance.
-    const totalVes = 119.96;
+    // Same setup, but a 0.44 Bs diff -- just outside the 0.42 tolerance.
+    const totalVes = 119.56;
     const totalUsd = totalVes / 40;
     const res = await app.inject({
       method: 'POST',

@@ -33,6 +33,9 @@ export async function buildTestApp(): Promise<{
     updateRow: vi.fn().mockResolvedValue(undefined),
   };
 
-  const app = buildApp({ pool, sheets: sheets as any, sheetsQueue: new SheetsQueue(), env });
+  // logger: false keeps test output quiet; tests that need to observe a
+  // warning/error spy on `app.log.warn`/`.error` directly (works the same
+  // whether the underlying logger is real or the no-op Fastify uses here).
+  const app = buildApp({ pool, sheets: sheets as any, sheetsQueue: new SheetsQueue(), env }, { logger: false });
   return { app, env, sheets };
 }

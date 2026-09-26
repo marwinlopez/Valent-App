@@ -11,8 +11,20 @@ import { registerCustomerRoutes } from './modules/customers/routes.js';
 import { registerInventoryRoutes } from './modules/inventory/routes.js';
 import { registerSalesRoutes } from './modules/sales/routes.js';
 
-export function buildApp(deps: AppDeps): FastifyInstance {
-  const app = Fastify({ logger: false });
+export interface BuildAppOptions {
+  /**
+   * Off by default only for tests: `app.log.warn`/`.error` are the only place
+   * the pricing-divergence audit, the internal-consistency checks, and the
+   * "sale recorded but stock not decremented" error surface. `logger: false`
+   * makes every one of those calls a silent no-op -- fine for a test that
+   * spies on `app.log.warn` directly, but not for the real server, where
+   * nothing else reads them.
+   */
+  logger?: boolean;
+}
+
+export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyInstance {
+  const app = Fastify({ logger: options.logger ?? true });
   app.decorate('deps', deps);
 
   app.register(fp(errorHandlerPlugin));
