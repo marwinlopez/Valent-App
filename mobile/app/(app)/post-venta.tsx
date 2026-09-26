@@ -14,6 +14,7 @@ import { EmptyState } from '../../src/components/ui/EmptyState';
 import { Skeleton } from '../../src/components/ui/Skeleton';
 import { useToast } from '../../src/feedback/ToastProvider';
 import { ApiRequestError } from '../../src/services/api/client';
+import { saleErrorMessage, SALE_ERROR_PREFIX } from '../../src/services/saleErrors';
 import type { PaymentMethod } from '../../src/types/api';
 
 const METHODS: { value: PaymentMethod; label: string }[] = [
@@ -30,23 +31,29 @@ const MISSING_MESSAGE = {
   cost: 'Un producto del carrito no tiene un costo válido.',
 } as const;
 
-const SALE_MESSAGE_BY_CODE: Record<string, string> = {
-  INSUFFICIENT_STOCK: 'No hay existencia suficiente para una de las líneas. Ajusta la cantidad.',
-  PRODUCT_NOT_FOUND: 'Un producto del carrito ya no está en el inventario.',
-  CREDIT_DENIED: 'El crédito fue rechazado.',
-  CUSTOMER_REQUIRED: 'Selecciona un cliente para cobrar a crédito.',
-  DUPLICATE_LINE: 'Hay una línea repetida en el carrito.',
-  INVALID_STOCK_VALUE: 'La existencia de un producto no es un número válido en la hoja.',
-};
-
 export default function PostVenta() {
-  const { barcode: scannedBarcode } = useLocalSearchParams<{ barcode?: string }>();
+  const { barcode: scannedBarcode, scanId } = useLocalSearchParams<{ barcode?: string; scanId?: string }>();
   const { data: products, isLoading, isError } = useProducts();
-  const { bcvRate, marginFor, isLoading: pricingLoading } = usePricingInputs();
+  const { bcvRate, marginFor, isLoading: pricingLoading, isError: pricingError } = usePricingInputs();
   const { lines, add, setQuantity, remove, clear } = useCart();
-  const { data: customers } = useCustomers();
+  const { data: customers, isLoading: customersLoading, isError: customersError } = useCustomers();
   const sale = useSale();
   const { showToast } = useToast();
+
+  // Which scan (barcode + scanId pair) was last consumed. A ref, not a
+  // dependence on the router ever clearing `barcode` back to undefined
+  // (mobile/post-venta previously assumed `router.setParams({barcode:
+  // undefined})` did that -- never verified, and on web `undefined` may just
+  // be dropped, leaving the old value in place). `products` getting a fresh
+  // identity from a background refetch (no staleTime is set on useProducts,
+  // so this happens on every focus/reconnect on web) re-runs the effect
+  // below without a new scan; comparing against this ref is what makes that
+  // a no-op while a genuinely new scan (new scanId, from vender-escanear.tsx)
+  // still always goes through -- including re-scanning the same barcode.
+  // escanear.tsx (sub-project 3) doesn't need this: it routes a scan to an
+  // idempotent destination (open/create a product screen), it doesn't have a
+  // side effect like "add one unit" to guard.
+  const consumedScanRef = useRef<string | null>(null);
 
   // `sale.isPending` only flips after React commits a render following
   // `mutateAsync`'s dispatch, so two taps close enough together both read it
@@ -70,21 +77,17 @@ export default function PostVenta() {
 
   useEffect(() => {
     if (!scannedBarcode || !products) return;
+    const scanKey = `${scannedBarcode}:${scanId ?? ''}`;
+    if (consumedScanRef.current === scanKey) return;
+    consumedScanRef.current = scanKey;
+
     const product = products.find((p) => p.barcode === scannedBarcode);
     if (product) {
       add(product);
     } else {
       showToast('Ese código no está en el inventario.');
     }
-    // Consumes the scanned barcode so a re-render (or navigating back to this
-    // same route without a fresh scan) doesn't add the product again. Passing
-    // `undefined` merges into the route's params rather than deleting the key,
-    // so the param survives as `{ barcode: undefined }` — that's fine, because
-    // the guard above already treats a falsy `scannedBarcode` as "nothing to
-    // add", and this effect only re-fires when `scannedBarcode`'s *value*
-    // changes, which it won't again until the next real scan replaces it.
-    router.setParams({ barcode: undefined });
-  }, [scannedBarcode, products, add, showToast]);
+  }, [scannedBarcode, scanId, products, add, showToast]);
 
   if (isLoading || pricingLoading) {
     return (
@@ -97,6 +100,21 @@ export default function PostVenta() {
 
   if (isError) {
     return <EmptyState title="No se pudo cargar el inventario" message="Revisa tu conexión e inténtalo de nuevo." />;
+  }
+
+  // Checked before `bcvRate === null`: that check can't otherwise tell "the
+  // rate genuinely isn't configured" apart from "the request for it just
+  // failed", and would send someone to Configuración to fix a rate that
+  // already exists. Same misdiagnosis family as the inventory `isError`
+  // above; matches how producto/[barcode].tsx and producto/nuevo.tsx already
+  // handle `usePricingInputs().isError`.
+  if (pricingError) {
+    return (
+      <EmptyState
+        title="No se pudo cargar la tasa o los márgenes"
+        message="Revisa tu conexión e inténtalo de nuevo."
+      />
+    );
   }
 
   if (bcvRate === null) {
@@ -148,7 +166,7 @@ export default function PostVenta() {
       showToast('Venta registrada.');
     } catch (err) {
       if (err instanceof ApiRequestError) {
-        showToast(SALE_MESSAGE_BY_CODE[err.code] ?? 'No se pudo registrar la venta.');
+        showToast(saleErrorMessage(err));
         return;
       }
       // Not an ApiRequestError: the request may or may not have landed, and
@@ -176,7 +194,7 @@ export default function PostVenta() {
         <List.Item
           key={product.barcode}
           title={product.name}
-          description={`${product.brand} · ${product.stock} ${product.unit}`}
+          description={`${product.brand} · ${product.stock ?? '—'} ${product.unit}`}
           onPress={() => {
             add(product);
             setQuery('');
@@ -246,24 +264,39 @@ export default function PostVenta() {
         ))}
       </Menu>
 
-      {method === 'CREDITO' && customerId && credit.isError ? (
-        <Text variant="bodyMedium">No se pudo verificar el crédito. Revisa tu conexión.</Text>
+      {/* `isError` checked first and the three states below chained as a single
+          if/else-if (not four independent ifs): the previous version could
+          show credit.isError's message and a *stale* cached credit.data
+          side by side in TanStack's isRefetchError state (a failed refetch
+          with a still-cached successful result) -- two contradictory
+          statements about money at once. The charge gate (`creditBlocked`
+          above) was already safe; only the display wasn't. */}
+      {method === 'CREDITO' && customerId ? (
+        credit.isError ? (
+          <Text variant="bodyMedium">No se pudo verificar el crédito. Revisa tu conexión.</Text>
+        ) : credit.data ? (
+          <Text variant="bodyMedium">
+            {credit.data.approved
+              ? `Crédito disponible: ${credit.data.availableCredit} USD`
+              : `${SALE_ERROR_PREFIX.CREDIT_DENIED}: ${credit.data.reason ?? 'sin cupo disponible'}`}
+          </Text>
+        ) : credit.isLoading ? (
+          <Text variant="bodyMedium">Verificando crédito…</Text>
+        ) : null
       ) : null}
 
-      {method === 'CREDITO' && customerId && credit.data ? (
-        <Text variant="bodyMedium">
-          {credit.data.approved
-            ? `Crédito disponible: ${credit.data.availableCredit} USD`
-            : `Crédito rechazado: ${credit.data.reason ?? 'sin cupo disponible'}`}
-        </Text>
-      ) : null}
-
+      {/* Same misdiagnosis family as the pricing-inputs isError above: a
+          failed GET /customers leaves the picker silently offering only "Sin
+          cliente", and telling the cashier to "select a customer" then points
+          at nothing they can act on. */}
       {method === 'CREDITO' && !customerId ? (
-        <Text variant="bodyMedium">Selecciona un cliente para cobrar a crédito.</Text>
-      ) : null}
-
-      {method === 'CREDITO' && customerId && credit.isLoading ? (
-        <Text variant="bodyMedium">Verificando crédito…</Text>
+        <Text variant="bodyMedium">
+          {customersError
+            ? 'No se pudieron cargar los clientes. Revisa tu conexión.'
+            : customersLoading
+              ? 'Cargando clientes…'
+              : 'Selecciona un cliente para cobrar a crédito.'}
+        </Text>
       ) : null}
 
       <Button loading={sale.isPending} disabled={!canCharge} onPress={charge}>

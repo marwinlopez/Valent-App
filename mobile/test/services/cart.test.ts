@@ -51,6 +51,43 @@ describe('priceCart', () => {
     expect(result.totalUsd).toBe(0.23);
   });
 
+  it('derives totalVes from totalUsd exactly, per line and per unit rounding independently', () => {
+    // The register used to show "98.52 Bs (2.76 USD)" for this exact
+    // configuration -- but 98.52 / 36.5 = 2.70, not 2.76: totalVes was being
+    // summed from independently-rounded per-unit bolivar prices instead of
+    // derived from totalUsd. Values below verified independently with
+    // node -e (not by running this test and copying its output):
+    //   unitPriceUsd = 0.23 (BigInt path, cost 0.15 @ 50%)
+    //   totalUsd = round2(0.23 * 12) = 2.76
+    //   totalVes = round2(2.76 * 36.5) = 100.74, not the old 98.52
+    const cheap: Product = { ...leche, barcode: '789', costUsd: 0.15 };
+    const result = priceCart([{ product: cheap, quantity: 12 }], () => 50, 36.5);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.totalUsd).toBe(2.76);
+    expect(result.totalVes).toBe(100.74);
+  });
+
+  it('keeps totalVes === round2(totalUsd * bcvRate) exactly, the invariant the backend cross-checks', () => {
+    // Verified independently with node -e: totalUsd = 9, totalVes = 328.5.
+    const result = priceCart(
+      [{ product: leche, quantity: 2 }, { product: arroz, quantity: 3 }],
+      marginFor,
+      36.5
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.totalUsd).toBe(9);
+    expect(result.totalVes).toBe(328.5);
+    expect(result.totalVes).toBe(Math.round(result.totalUsd * 36.5 * 100) / 100);
+  });
+
+  it('reports a bad bcvRate (<=0) as missing, not silently converted', () => {
+    const result = priceCart([{ product: leche, quantity: 1 }], marginFor, 0);
+    expect(result).toEqual({ ok: false, missing: 'bcvRate' });
+  });
+
   it('reports the missing input rather than pricing part of the cart', () => {
     const result = priceCart([{ product: leche, quantity: 1 }], marginFor, null);
     expect(result).toEqual({ ok: false, missing: 'bcvRate' });
