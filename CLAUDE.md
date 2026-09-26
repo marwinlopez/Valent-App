@@ -163,8 +163,23 @@ transacción de venta a crédito vs. escritura en Sheets.)
       - El `appendRow` de la venta está **deliberadamente excluido** de los reintentos de
         `SheetsQueue`: no se puede distinguir "grabó y después falló" de "nunca grabó", y
         reintentar duplicaría la fila con el mismo `saleId`.
-- [ ] Sub-proyecto 5: Crédito y Fidelidad (UI en Configuración sobre los endpoints ya
-      existentes en el backend)
+- [x] Sub-proyecto 5A: Configuración — tasa BCV y márgenes — hecho. Sin backend nuevo.
+      Desbloquea la caja, que se niega a cobrar sin tasa del día ni margen del departamento.
+      Márgenes siempre a nivel `DEPARTAMENTO` y por coincidencia de string **exacta**, igual
+      que `marginFor` (las reglas que no coinciden con nada se muestran, no se ocultan).
+      `parseDecimal` acepta la coma decimal en todo campo numérico.
+      **No reabrir:** la fecha de la tasa es la fecha **UTC** (`todayRateDate`), igual que el
+      "hoy" del backend. En hora local, de 20:00 a medianoche en Caracas la tasa se grabaría
+      para el día equivocado y la caja diría que no hay tasa.
+      **PENDIENTE DE VERIFICACIÓN EN VIVO** (igual que 2–4): ninguna de las dos pantallas se
+      vio contra un backend real. La revisión final encontró que `GET /bcv-rate` devolvía la
+      fecha como `Date` serializado (corregido) — justo la clase de bug que pg-mem no delata.
+- [ ] Sub-proyecto 5B: Crédito y Fidelidad. La premisa original ("UI sobre endpoints ya
+      existentes") era falsa: no hay endpoints de `loyalty_levels`, no se puede editar un
+      cliente, y **no hay forma de registrar un pago** (la deuda solo sube). Ya decidido (ver
+      spec 5A): pagos en USD en una tabla nueva `payments` de solo-agregado, sobrepago
+      rechazado con el monto adeudado, y corregir los gates de rol de `GET/POST /customers`
+      (hoy `CLIENTE_PEDIDOS` puede listar saldos de deuda).
 - [ ] Sub-proyecto 6: QR de cliente (generación con react-native-qrcode-svg, escaneo con
       expo-camera, catálogo de autoservicio y pedidos)
 - [ ] Sub-proyecto 7: Dashboard y Configuración
