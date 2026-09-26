@@ -47,14 +47,20 @@ export function priceCart(
 ): PricedCart {
   // bcvRate is cart-wide, not per-line, and (now that bolivars derive from
   // USD) only needed to convert the finished USD total -- so it's validated
-  // once, up front, by reusing calculatePriceVes's own null/non-finite/<=0
-  // rate checks (cost 0 and margin 0 never trip on their own) instead of
-  // duplicating that logic here.
+  // once, up front, by reusing calculatePriceVes's own non-finite/<=0 rate
+  // checks (cost 0 and margin 0 never trip on their own) instead of
+  // duplicating that logic here. The null check runs first, and separately,
+  // because it's what narrows `bcvRate` from `number | null` to `number`
+  // below -- calculatePriceVes's own return type doesn't carry that
+  // narrowing back to its argument.
+  if (bcvRate === null) {
+    return { ok: false, missing: 'bcvRate' };
+  }
   const rateCheck = calculatePriceVes(0, 0, bcvRate);
   if (!rateCheck.ok) {
     return { ok: false, missing: rateCheck.missing };
   }
-  const rate = bcvRate as number;
+  const rate = bcvRate;
 
   const usdLines: Array<{ line: CartLine; unitPriceUsd: number; lineTotalUsd: number }> = [];
   let totalUsd = 0;

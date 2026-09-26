@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef } from 'react';
 import { View, StyleSheet, Platform, Linking } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Text } from 'react-native-paper';
@@ -29,7 +29,12 @@ export function BarcodeScanner({
 }: BarcodeScannerProps) {
   const [permission, requestPermission] = useCameraPermissions();
   // Without this, a code held in frame fires onBarcodeScanned on every frame.
-  const [handled, setHandled] = useState(false);
+  // A ref, not state: two onBarcodeScanned events firing in the same tick
+  // both read the guard before either write commits, so state's deferred
+  // update lets both through -- the identical closure-staleness bug fixed
+  // with chargingRef in post-venta.tsx. Not used in render, so no state
+  // needed alongside it.
+  const handledRef = useRef(false);
 
   if (Platform.OS === 'web') {
     return <Message text={webMessage} onCancel={onCancel} />;
@@ -63,10 +68,10 @@ export function BarcodeScanner({
         style={StyleSheet.absoluteFill}
         barcodeScannerSettings={{ barcodeTypes }}
         onBarcodeScanned={({ data }) => {
-          if (handled) {
+          if (handledRef.current) {
             return;
           }
-          setHandled(true);
+          handledRef.current = true;
           onScan(data);
         }}
       />

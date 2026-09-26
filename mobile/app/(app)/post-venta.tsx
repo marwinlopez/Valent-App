@@ -14,7 +14,12 @@ import { EmptyState } from '../../src/components/ui/EmptyState';
 import { Skeleton } from '../../src/components/ui/Skeleton';
 import { useToast } from '../../src/feedback/ToastProvider';
 import { ApiRequestError } from '../../src/services/api/client';
-import { saleErrorMessage, SALE_ERROR_PREFIX } from '../../src/services/saleErrors';
+import {
+  saleErrorMessage,
+  SALE_ERROR_PREFIX,
+  SALE_UNKNOWN_OUTCOME_MESSAGE,
+  translateCreditDenialReason,
+} from '../../src/services/saleErrors';
 import type { PaymentMethod } from '../../src/types/api';
 
 const METHODS: { value: PaymentMethod; label: string }[] = [
@@ -171,7 +176,7 @@ export default function PostVenta() {
       }
       // Not an ApiRequestError: the request may or may not have landed, and
       // POST /sales is not idempotent, so we must not retry silently.
-      showToast('No sabemos si la venta se registró. Verifícala antes de cobrar de nuevo.');
+      showToast(SALE_UNKNOWN_OUTCOME_MESSAGE);
     } finally {
       // Reset even on failure/unknown-outcome: a locked button after a failed
       // sale would be its own counter emergency. Whether the operator SHOULD
@@ -278,7 +283,9 @@ export default function PostVenta() {
           <Text variant="bodyMedium">
             {credit.data.approved
               ? `Crédito disponible: ${credit.data.availableCredit} USD`
-              : `${SALE_ERROR_PREFIX.CREDIT_DENIED}: ${credit.data.reason ?? 'sin cupo disponible'}`}
+              : `${SALE_ERROR_PREFIX.CREDIT_DENIED}: ${
+                  credit.data.reason ? translateCreditDenialReason(credit.data.reason) : 'sin cupo disponible'
+                }`}
           </Text>
         ) : credit.isLoading ? (
           <Text variant="bodyMedium">Verificando crédito…</Text>
