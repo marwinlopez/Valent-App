@@ -10,6 +10,20 @@ interface RetryableError {
   code?: number;
 }
 
+/**
+ * Whether an error is a transient Sheets problem (429/5xx) worth retrying.
+ *
+ * Exported (not just `SheetsQueue`-private) so a write that must be retried
+ * on its own -- outside `enqueue`, e.g. one line of a multi-line stock
+ * decrement in `sales/routes.ts` -- uses the exact same classification
+ * instead of a second, possibly-drifting copy of it.
+ */
+export function isRetryableSheetsError(err: unknown): boolean {
+  const e = err as RetryableError;
+  const status = e.response?.status ?? e.code;
+  return status === 429 || (typeof status === 'number' && status >= 500);
+}
+
 export class SheetsQueue {
   private queues = new Map<string, PQueue>();
 
@@ -51,8 +65,6 @@ export class SheetsQueue {
   }
 
   private isRetryable(err: unknown): boolean {
-    const e = err as RetryableError;
-    const status = e.response?.status ?? e.code;
-    return status === 429 || (typeof status === 'number' && status >= 500);
+    return isRetryableSheetsError(err);
   }
 }

@@ -2,10 +2,32 @@ import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ApiError } from '../../plugins/errorHandler.js';
+import { isRetryableSheetsError } from '../../sheets/queue.js';
 import { evaluateCreditCheck } from '../customers/credit.js';
 import { findProductRows, writeProductRow, type ProductRow } from '../inventory/products.js';
 
 const SALES_APPEND_RANGE = 'Ventas!A:I';
+
+// Stock writes are idempotent (writeProductRow always writes an absolute
+// stock value, never a delta), so retrying one on a transient Sheets error is
+// safe -- unlike the sale-row append below, which is not idempotent and must
+// NOT be retried. Small and local to this loop; MAX_STOCK_WRITE_ATTEMPTS
+// mirrors SheetsQueue's own MAX_ATTEMPTS.
+const MAX_STOCK_WRITE_ATTEMPTS = 3;
+
+async function withStockWriteRetries(write: () => Promise<void>): Promise<void> {
+  for (let attempt = 1; attempt <= MAX_STOCK_WRITE_ATTEMPTS; attempt++) {
+    try {
+      await write();
+      return;
+    } catch (err) {
+      if (attempt === MAX_STOCK_WRITE_ATTEMPTS || !isRetryableSheetsError(err)) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2 ** attempt * 50));
+    }
+  }
+}
 
 interface AuditableItem {
   barcode: string;
@@ -22,8 +44,13 @@ interface AuditableItem {
  * divergence, not agree to the last unit. Reimplementing the app's integer
  * pricing here would create a second source of truth that can drift silently.
  *
- * The tolerance scales with line count so accumulated per-line rounding
- * doesn't raise false alarms.
+ * The tolerance scales with total quantity, not line count: the client rounds
+ * a UNIT price to the nearest céntimo (max 0.005 Bs error) and then multiplies
+ * by quantity, so the error accumulates once per unit sold, not once per
+ * line. 0.01 per unit is double that per-unit bound; 0.02 per line adds a
+ * little extra slack for the line-level rounding step and float summation
+ * noise. A budget that scaled with line count instead (as this one used to)
+ * warns on ordinary correct sales as soon as quantity > 1.
  */
 async function auditTotal(
   app: FastifyInstance,
@@ -67,11 +94,60 @@ async function auditTotal(
     expected += product.costUsd * (1 + margin / 100) * rate * item.quantity;
   }
 
-  const tolerance = 0.01 * items.length;
+  const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+  const tolerance = 0.01 * totalQuantity + 0.02 * items.length;
   if (Math.abs(expected - clientTotalVes) > tolerance) {
     app.log.warn(
       { saleId, clientTotalVes, expectedTotalVes: expected, tolerance },
-      'Sale total differs from the server-side estimate'
+      'Sale total_ves differs from the server-side price estimate (possible stale rate/margin on the client)'
+    );
+  }
+}
+
+/**
+ * Internal-consistency checks on the numbers the client sent, using no
+ * catalog/rate/margin data at all -- so, unlike `auditTotal`, these still run
+ * when there's no bcv_rates row or no margin rule for a department.
+ *
+ * `totalUsd` is what `evaluateCreditCheck` compares against the credit limit
+ * and what gets added to `customers.current_debt_balance`. A client that sent
+ * `items` worth real money but a tiny `totalUsd` would sail through
+ * `auditTotal` (which never looks at totalUsd) and incur a fraction of the
+ * actual debt. This pins two arithmetic relationships that must hold no
+ * matter what the "true" price should have been:
+ *   - totalUsd must equal the sum of the client's own per-line usd prices
+ *   - totalVes must equal totalUsd converted at the client's own bcvRateUsed
+ *
+ * Deliberately `bcvRateUsed` from the request, not the day's rate from
+ * Postgres: this checks the client's numbers are mutually consistent, not
+ * that they match today's price (auditTotal already does the latter).
+ */
+function auditInternalConsistency(
+  app: FastifyInstance,
+  saleId: string,
+  items: { quantity: number; unitPriceUsd: number }[],
+  totalUsd: number,
+  totalVes: number,
+  bcvRateUsed: number
+): void {
+  // Mobile's `priceCart` (cart.ts) sums per-line USD prices with a single
+  // round2 at the end, so this only needs to absorb float summation noise.
+  const itemsSumUsd = items.reduce((sum, item) => sum + item.unitPriceUsd * item.quantity, 0);
+  if (Math.abs(itemsSumUsd - totalUsd) > 0.01) {
+    app.log.warn(
+      { saleId, itemsSumUsd, totalUsd },
+      'Sale total_usd is internally inconsistent with its own line items -- possible broken or hostile client'
+    );
+  }
+
+  // After the mobile fix that makes bolivars derive from USD, totalVes =
+  // round2(totalUsd * bcvRate) holds by construction on the client, so this
+  // tolerance only needs to cover a single round2 step (0.005) plus noise.
+  const expectedTotalVes = Math.round(totalUsd * bcvRateUsed * 100) / 100;
+  if (Math.abs(expectedTotalVes - totalVes) > 0.01) {
+    app.log.warn(
+      { saleId, totalUsd, bcvRateUsed, expectedTotalVes, totalVes },
+      'Sale total_ves is internally inconsistent with total_usd and bcvRateUsed -- possible broken or hostile client'
     );
   }
 }
@@ -79,17 +155,25 @@ async function auditTotal(
 const saleItemSchema = z.object({
   barcode: z.string().min(1),
   name: z.string().min(1),
-  quantity: z.number().positive(),
-  unitPriceUsd: z.number().nonnegative(),
+  // .int() matches the client's own guard (useCart.ts's `Number.isInteger`
+  // check) and, since Number.isInteger(Infinity/NaN) is false, already rejects
+  // non-finite quantities too -- no separate .finite() needed here.
+  quantity: z.number().int().positive(),
+  unitPriceUsd: z.number().nonnegative().finite(),
 });
 
 const createSaleSchema = z.object({
   customerId: z.string().uuid().optional(),
   items: z.array(saleItemSchema).min(1),
-  totalUsd: z.number().nonnegative(),
-  totalVes: z.number().nonnegative(),
+  // .finite() on every numeric field below closes the same hole
+  // writeProductRow's runtime guard exists for on the products sheet:
+  // `JSON.parse('{"a":1e999}')` yields Infinity, and a plain z.number() lets
+  // it through. Tightening the schema covers every field here cleanly, so no
+  // separate runtime guard (à la writeProductRow) is needed for this route.
+  totalUsd: z.number().nonnegative().finite(),
+  totalVes: z.number().nonnegative().finite(),
   paymentMethod: z.enum(['EFECTIVO_USD', 'EFECTIVO_VES', 'PAGO_MOVIL', 'PUNTO_DE_VENTA', 'CREDITO']),
-  bcvRateUsed: z.number().positive(),
+  bcvRateUsed: z.number().positive().finite(),
 });
 
 export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
@@ -151,50 +235,92 @@ export async function registerSalesRoutes(app: FastifyInstance): Promise<void> {
           }
         }
 
-        await auditTotal(app, req.auth!.accountId, saleId, body.items, products, body.totalVes).catch(() => undefined);
+        await auditTotal(app, req.auth!.accountId, saleId, body.items, products, body.totalVes).catch((err) => {
+          // Must never reject (the sale still has to go through), but a real
+          // Postgres error in here is indistinguishable from "no rate
+          // configured" unless it's logged -- the two look identical to the
+          // caller (both just mean "no warning fired").
+          app.log.warn({ err, saleId }, 'auditTotal failed and was skipped for this sale');
+        });
+        auditInternalConsistency(app, saleId, body.items, body.totalUsd, body.totalVes, body.bcvRateUsed);
 
         // The sale row goes first on purpose. If a write fails partway, this
         // order leaves a recorded sale with stock not fully decremented —
         // inventory reads high, which a physical count surfaces, and the money
         // is on the books. The reverse would lose the revenue record and shrink
         // inventory, which nothing surfaces.
-        await app.deps.sheets.appendRow(spreadsheetId, SALES_APPEND_RANGE, [
-          saleId,
-          new Date().toISOString(),
-          req.auth!.deviceId,
-          body.customerId ?? '',
-          JSON.stringify(body.items),
-          body.totalUsd,
-          body.totalVes,
-          body.paymentMethod,
-          body.bcvRateUsed,
-        ]);
-
         try {
-          for (const item of body.items) {
-            const product = products.get(item.barcode)!;
-            const sheetRow = product.rowIndex + 1;
-            await writeProductRow(app, spreadsheetId, sheetRow, product.barcode, [
-              product.barcode,
-              product.name,
-              product.brand,
-              product.department,
-              product.unit,
-              product.costUsd,
-              product.stock - item.quantity,
-              new Date().toISOString(),
-              req.auth!.deviceId,
-            ]);
-          }
+          await app.deps.sheets.appendRow(spreadsheetId, SALES_APPEND_RANGE, [
+            saleId,
+            new Date().toISOString(),
+            req.auth!.deviceId,
+            body.customerId ?? '',
+            JSON.stringify(body.items),
+            body.totalUsd,
+            body.totalVes,
+            body.paymentMethod,
+            body.bcvRateUsed,
+          ]);
         } catch (err) {
-          // The sale row already landed. Throwing here would tell the operator
-          // the sale failed and invite a second charge — and `POST /sales` is
-          // not idempotent, so that is the worse outcome. It would also reach
-          // the credit path's compensation below, reversing the debt for a sale
-          // that IS on the books: exactly the silent under-billing that the
-          // existing ordering comment says to avoid. Stock reads high until
-          // someone counts, which is the discoverable side.
-          app.log.error({ err, saleId }, 'Sale recorded but stock was not fully decremented');
+          // This append may have already committed on Google's side before the
+          // failure reached us (a 503, a dropped connection) -- routine under
+          // load. SheetsQueue.withRetry replays this ENTIRE task on a
+          // retryable error (see queue.ts's isRetryable), which would re-append
+          // this same saleId a second time: duplicated revenue, one stock
+          // decrement, one debt increment. We cannot tell "committed then
+          // failed" from "never sent", so this append must never be retried.
+          // ApiError is inherently non-retryable to withRetry (its `code` is a
+          // string, not a numeric status), so wrapping any error from this one
+          // call in an ApiError guarantees it surfaces to the operator instead
+          // of being silently replayed. The full fix is a saleId ledger
+          // mirroring stock_adjustments (tracked as a backend follow-up).
+          throw new ApiError(
+            502,
+            'SALE_APPEND_FAILED',
+            'Could not confirm the sale was recorded in Sheets; verify before charging again'
+          );
+        }
+
+        const failedBarcodes: string[] = [];
+        for (const item of body.items) {
+          const product = products.get(item.barcode)!;
+          const sheetRow = product.rowIndex + 1;
+          try {
+            // Retried on its own (not via sheetsQueue -- calling enqueue again
+            // from inside an already-running task would just queue behind
+            // itself, breaking the one-atomic-block rule). Safe to retry
+            // because writeProductRow writes an absolute stock value, not a
+            // delta: replaying it is a no-op if it already landed.
+            await withStockWriteRetries(() =>
+              writeProductRow(app, spreadsheetId, sheetRow, product.barcode, [
+                product.barcode,
+                product.name,
+                product.brand,
+                product.department,
+                product.unit,
+                product.costUsd,
+                product.stock - item.quantity,
+                new Date().toISOString(),
+                req.auth!.deviceId,
+              ])
+            );
+          } catch (err) {
+            // The sale row already landed. Throwing here would tell the
+            // operator the sale failed and invite a second charge — and
+            // `POST /sales` is not idempotent, so that is the worse outcome.
+            // It would also reach the credit path's compensation below,
+            // reversing the debt for a sale that IS on the books: exactly the
+            // silent under-billing the ordering comment above warns against.
+            // Scoped per line (not one try around the whole loop) so one
+            // barcode failing after retries doesn't abandon every line after
+            // it. Stock reads high until someone counts, which is the
+            // discoverable side.
+            failedBarcodes.push(item.barcode);
+            app.log.error(
+              { err, saleId, barcode: item.barcode, failedBarcodes },
+              'Sale recorded but stock was not decremented for this barcode'
+            );
+          }
         }
       });
 

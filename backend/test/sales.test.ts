@@ -294,11 +294,59 @@ describe('POST /sales', () => {
     });
 
     // The caller gets a real error rather than a silent partial success...
-    expect(res.statusCode).toBe(500);
+    // 502 SALE_APPEND_FAILED, not a generic 500: see the A1 fix in routes.ts
+    // -- any appendRow failure is wrapped so SheetsQueue's retry can never
+    // replay this non-idempotent write.
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error.code).toBe('SALE_APPEND_FAILED');
     expect(balanceDuringAppend).toBe(70);
 
     // ...and the customer is not left carrying debt for a sale that never
     // reached the ledger.
+    const { rows } = await app.deps.pool.query('SELECT current_debt_balance FROM customers WHERE id = $1', [
+      customerRows[0].id,
+    ]);
+    expect(Number(rows[0].current_debt_balance)).toBe(20);
+  });
+
+  it('reverses the credit balance when a credit sale is rejected for insufficient stock, not just for an infra failure', async () => {
+    // Before A5's stock-write fix, only an infrastructure failure (a rejected
+    // appendRow) could enter this compensation branch. Now an ordinary
+    // cashier mistake -- a line that outsells the stock on hand -- throws
+    // from inside the same recordSale() and must be compensated too.
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    const { rows: levelRows } = await app.deps.pool.query(
+      'INSERT INTO loyalty_levels (account_id, name, credit_limit, max_payment_term_days) VALUES ($1, $2, $3, $4) RETURNING id',
+      [account.id, 'Oro', 300, 30]
+    );
+    const { rows: customerRows } = await app.deps.pool.query(
+      'INSERT INTO customers (account_id, name, loyalty_level_id, current_debt_balance) VALUES ($1, $2, $3, $4) RETURNING id',
+      [account.id, 'Cliente Credito', levelRows[0].id, 20]
+    );
+    sheets.getValues.mockResolvedValue([
+      ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '1', '', ''], // only 1 unit in stock
+    ]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        customerId: customerRows[0].id,
+        items: [{ barcode: '123', name: 'Leche', quantity: 5, unitPriceUsd: 3 }],
+        totalUsd: 15,
+        totalVes: 600,
+        paymentMethod: 'CREDITO',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INSUFFICIENT_STOCK');
+    expect(sheets.appendRow).not.toHaveBeenCalled();
+
     const { rows } = await app.deps.pool.query('SELECT current_debt_balance FROM customers WHERE id = $1', [
       customerRows[0].id,
     ]);
@@ -558,6 +606,39 @@ describe('POST /sales stock decrement', () => {
     expect(Number(rows[0].current_debt_balance)).toBe(3);
   });
 
+  it('does not replay the sale append when it fails with a 503-shaped (retryable) error', async () => {
+    // Pins the A1 fix: a 503 from appendRow is exactly the kind of error
+    // SheetsQueue.withRetry would otherwise replay up to 3 times, which for
+    // this non-idempotent write means duplicating the sale row. It must be
+    // called exactly once, and the caller must see an error, never a 200.
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2.5', '10', '', '']]);
+    const err = new Error('service unavailable') as Error & { response: { status: number } };
+    err.response = { status: 503 };
+    sheets.appendRow.mockRejectedValue(err);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 3 }],
+        totalUsd: 3,
+        totalVes: 120,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+
+    expect(res.statusCode).not.toBe(200);
+    expect(res.json().error.code).toBe('SALE_APPEND_FAILED');
+    expect(sheets.appendRow).toHaveBeenCalledTimes(1);
+    // No stock write either: appendRow throwing must skip the decrement loop.
+    expect(sheets.updateRow).not.toHaveBeenCalled();
+  });
+
   it('rejects the same barcode appearing twice in one sale', async () => {
     const { app } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
@@ -585,7 +666,21 @@ describe('POST /sales stock decrement', () => {
 });
 
 describe('POST /sales total audit', () => {
-  async function saleWith(totalVes: number) {
+  // Captures every SQL statement issued through app.deps.pool.query during
+  // the request, so a "no warning" assertion can be pinned to "the audit ran
+  // and concluded no warning" instead of passing just as well if auditTotal's
+  // call (or a specific early-return) were deleted entirely.
+  function spyOnQueries(app: any): string[] {
+    const queries: string[] = [];
+    const originalQuery = app.deps.pool.query.bind(app.deps.pool);
+    vi.spyOn(app.deps.pool, 'query').mockImplementation((...args: unknown[]) => {
+      if (typeof args[0] === 'string') queries.push(args[0]);
+      return (originalQuery as (...a: unknown[]) => Promise<unknown>)(...(args as [string, ...unknown[]]));
+    });
+    return queries;
+  }
+
+  async function saleWith(totalVes: number, quantity = 2) {
     const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
     const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
@@ -610,26 +705,42 @@ describe('POST /sales total audit', () => {
       ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2', '10', '', ''],
     ]);
 
+    // Spied AFTER the setup inserts above, so only the queries the request
+    // itself issues are captured.
+    const queries = spyOnQueries(app);
+
+    // unitPriceUsd/totalUsd chase totalVes at bcvRateUsed=40 so A3's
+    // internal-consistency checks (which run unconditionally, regardless of
+    // whether a rate/margin is configured) stay quiet and only auditTotal --
+    // which compares against the *product's real* cost and margin -- is
+    // exercised. quantity default 2 keeps the pre-existing "matches"/"differs"
+    // cases' numbers (240 Bs) intact.
+    const totalUsd = totalVes / 40;
     const res = await app.inject({
       method: 'POST',
       url: '/sales',
       headers: { authorization: `Bearer ${jwt}` },
       payload: {
-        items: [{ barcode: '123', name: 'Leche', quantity: 2, unitPriceUsd: 3 }],
-        totalUsd: 6,
+        items: [{ barcode: '123', name: 'Leche', quantity, unitPriceUsd: totalUsd / quantity }],
+        totalUsd,
         totalVes,
         paymentMethod: 'EFECTIVO_USD',
         bcvRateUsed: 40,
       },
     });
-    return { res, warn };
+    return { res, warn, queries };
   }
 
   // 2 USD cost + 50% margin = 3 USD, x2 units, x40 = 240 Bs
   it('stays quiet when the client total matches the server estimate', async () => {
-    const { res, warn } = await saleWith(240);
+    const { res, warn, queries } = await saleWith(240);
     expect(res.statusCode).toBe(200);
     expect(warn).not.toHaveBeenCalled();
+    // Non-vacuous: proves auditTotal's SELECTs actually ran, so "no warning"
+    // reflects a real comparison rather than the whole function (or its call
+    // site) having been deleted.
+    expect(queries.some((q) => q.includes('FROM bcv_rates'))).toBe(true);
+    expect(queries.some((q) => q.includes('FROM margin_rules'))).toBe(true);
   });
 
   it('warns when the client total differs beyond the tolerance', async () => {
@@ -641,15 +752,113 @@ describe('POST /sales total audit', () => {
     );
   });
 
+  // Brackets the A2 tolerance boundary (0.01 * totalQuantity + 0.02 * lines)
+  // from both sides: 1 line, qty 1 -> tolerance 0.03. The old per-line-only
+  // formula (0.01 * items.length = 0.01) would warn on BOTH of these, since
+  // even the "inside" case's 0.02 Bs diff exceeds it -- which is exactly the
+  // false-alarm-on-an-ordinary-sale bug A2 fixes.
+  it('stays quiet just inside the tolerance boundary', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    const warn = vi.spyOn(app.log, 'warn');
+    const today = new Date().toISOString().slice(0, 10);
+    await app.deps.pool.query('INSERT INTO bcv_rates (account_id, rate_date, rate) VALUES ($1, $2, $3)', [
+      account.id,
+      today,
+      40,
+    ]);
+    await app.deps.pool.query(
+      "INSERT INTO margin_rules (account_id, level, level_name, percentage) VALUES ($1, 'DEPARTAMENTO', $2, $3)",
+      [account.id, 'Lacteos', 50]
+    );
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2', '10', '', '']]);
+    const queries = spyOnQueries(app);
+
+    // True server estimate: 2 * 1.5 * 40 = 120. Client total is 119.98, a
+    // 0.02 Bs diff, inside the 0.03 tolerance. totalUsd/unitPriceUsd are
+    // totalVes/40 so A3's checks stay quiet too.
+    const totalVes = 119.98;
+    const totalUsd = totalVes / 40;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: totalUsd }],
+        totalUsd,
+        totalVes,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(warn).not.toHaveBeenCalled();
+    // Non-vacuous: proves the comparison actually ran at this specific
+    // boundary value, rather than auditTotal (or its call) being deleted.
+    expect(queries.some((q) => q.includes('FROM bcv_rates'))).toBe(true);
+    expect(queries.some((q) => q.includes('FROM margin_rules'))).toBe(true);
+  });
+
+  it('warns just outside the tolerance boundary', async () => {
+    const { app, sheets } = await buildTestApp();
+    const account = await insertAccount(app.deps.pool);
+    const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
+    const warn = vi.spyOn(app.log, 'warn');
+    const today = new Date().toISOString().slice(0, 10);
+    await app.deps.pool.query('INSERT INTO bcv_rates (account_id, rate_date, rate) VALUES ($1, $2, $3)', [
+      account.id,
+      today,
+      40,
+    ]);
+    await app.deps.pool.query(
+      "INSERT INTO margin_rules (account_id, level, level_name, percentage) VALUES ($1, 'DEPARTAMENTO', $2, $3)",
+      [account.id, 'Lacteos', 50]
+    );
+    sheets.getValues.mockResolvedValue([['123', 'Leche', 'X', 'Lacteos', 'unidad', '2', '10', '', '']]);
+
+    // Same setup, but a 0.04 Bs diff -- just outside the 0.03 tolerance.
+    const totalVes = 119.96;
+    const totalUsd = totalVes / 40;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sales',
+      headers: { authorization: `Bearer ${jwt}` },
+      payload: {
+        items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: totalUsd }],
+        totalUsd,
+        totalVes,
+        paymentMethod: 'EFECTIVO_USD',
+        bcvRateUsed: 40,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(warn).toHaveBeenCalled();
+  });
+
   it('skips the audit when no rate is configured, rather than warning on every sale', async () => {
     const { app, sheets } = await buildTestApp();
     const account = await insertAccount(app.deps.pool);
     const { jwt } = await jwtFor(app, account.id, 'POST_VENTA');
     const warn = vi.spyOn(app.log, 'warn');
+    // A margin rule DOES exist this time. Without it, the item loop's
+    // "margin === undefined" check would return early regardless of whether
+    // the "no rate configured" early-return works -- masking exactly the
+    // branch this test is supposed to pin. It has to be the rate, and only
+    // the rate, that's missing.
+    await app.deps.pool.query(
+      "INSERT INTO margin_rules (account_id, level, level_name, percentage) VALUES ($1, 'DEPARTAMENTO', $2, $3)",
+      [account.id, 'Lacteos', 50]
+    );
     sheets.getValues.mockResolvedValue([
       ['123', 'Leche', 'X', 'Lacteos', 'unidad', '2', '10', '', ''],
     ]);
 
+    const queries = spyOnQueries(app);
+
+    // totalVes = totalUsd * bcvRateUsed exactly, so A3's unconditional
+    // internal-consistency checks stay quiet -- this test is only about
+    // whether auditTotal itself skips.
     const res = await app.inject({
       method: 'POST',
       url: '/sales',
@@ -657,7 +866,7 @@ describe('POST /sales total audit', () => {
       payload: {
         items: [{ barcode: '123', name: 'Leche', quantity: 1, unitPriceUsd: 3 }],
         totalUsd: 3,
-        totalVes: 999,
+        totalVes: 120,
         paymentMethod: 'EFECTIVO_USD',
         bcvRateUsed: 40,
       },
@@ -665,5 +874,11 @@ describe('POST /sales total audit', () => {
 
     expect(res.statusCode).toBe(200);
     expect(warn).not.toHaveBeenCalled();
+    // Non-vacuous: the rate lookup ran (the audit wasn't skipped/deleted
+    // entirely)...
+    expect(queries.some((q) => q.includes('FROM bcv_rates'))).toBe(true);
+    // ...and the margin lookup did NOT (proving it was the "no rate
+    // configured" early return that stopped it, not some other reason).
+    expect(queries.some((q) => q.includes('FROM margin_rules'))).toBe(false);
   });
 });
